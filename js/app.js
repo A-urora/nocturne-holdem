@@ -11,8 +11,15 @@
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
   const SETTINGS_KEY = "nocturne.holdem.settings.v1";
   const ONLINE_SESSION_PREFIX = "nocturne.online.session.";
+  const ONLINE_RECENT_KEY = "nocturne.online.recent.v1";
   const SOLO_HISTORY_KEY = "nocturne.solo.history.v1";
+  const SOLO_SAVE_KEY = "nocturne.solo.save.v1";
   const SOLO_HISTORY_LIMIT = 100;
+  const ONLINE_RECENT_LIMIT = 6;
+  const ONLINE_RECENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  const ONLINE_REQUEST_TIMEOUT_MS = 20000;
+  const ONLINE_CHECK_TIMEOUT_MS = 60000;
+  const ONLINE_STATE_TIMEOUT_MS = 12000;
   const ONLINE_POLL_MS = 5000;
   const POSITIONS = {
     2: ["pos-bottom", "pos-top"],
@@ -82,6 +89,7 @@
       errorCount: 0,
       lastLogId: 0,
       lastChatId: 0,
+      lastRememberKey: "",
       chatReady: false,
       chatSending: false,
       pollTimer: null,
@@ -89,6 +97,8 @@
     },
     ais: new Map(),
     settings: loadSettings(),
+    soloResume: null,
+    soloSaveTimer: null,
     hero: null,
     paused: false,
     setupOpen: true,
@@ -200,6 +210,13 @@
     botFillToggle: $("#botFillToggle"),
     joinCodeInput: $("#joinCodeInput"),
     joinRoomBtn: $("#joinRoomBtn"),
+    soloResumeCard: $("#soloResumeCard"),
+    soloResumeTitle: $("#soloResumeTitle"),
+    soloResumeMeta: $("#soloResumeMeta"),
+    resumeSoloBtn: $("#resumeSoloBtn"),
+    discardSoloBtn: $("#discardSoloBtn"),
+    recentRooms: $("#recentRooms"),
+    recentRoomsList: $("#recentRoomsList"),
     startBtnSmall: $("#startBtnSmall"),
     startBtnText: $("#startBtnText"),
     setupModeHint: $("#setupModeHint"),
@@ -274,6 +291,248 @@
     }
   }
 
+  function removeSoloSaveKey() {
+    try {
+      localStorage.removeItem(SOLO_SAVE_KEY);
+    } catch (error) {
+      /* file:// or private mode */
+    }
+  }
+
+  function loadSoloSave() {
+    try {
+      const raw = localStorage.getItem(SOLO_SAVE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.version !== 1 || !parsed.game) {
+        removeSoloSaveKey();
+        return null;
+      }
+      const game = PokerGame.fromSnapshot(parsed.game);
+      const hero =
+        game.players.find((player) => player.id === parsed.heroId) ||
+        game.players.find((player) => player.isHuman) ||
+        null;
+      if (!hero || hero.chips <= 0 || game.gameOver || !game.handNumber) {
+        removeSoloSaveKey();
+        return null;
+      }
+      const settings = sanitizeSettings({ ...DEFAULT_SETTINGS, ...(parsed.settings || {}) });
+      return { ...parsed, game, hero, settings };
+    } catch (error) {
+      removeSoloSaveKey();
+      return null;
+    }
+  }
+
+  function soloSaveHero(save) {
+    if (!save || !save.game) return null;
+    return (
+      save.hero ||
+      save.game.players.find((player) => player.id === save.heroId) ||
+      save.game.players.find((player) => player.isHuman) ||
+      null
+    );
+  }
+
+  function saveSoloGame() {
+    if (state.mode !== "solo" || !state.game || !state.hero || state.setupOpen) return;
+    if (state.game.gameOver || state.hero.chips <= 0 || !state.game.handNumber) {
+      clearSoloSave();
+      return;
+    }
+    try {
+      const snapshot = {
+        version: 1,
+        savedAt: Date.now(),
+        heroId: state.hero.id,
+        settings: { ...state.settings },
+        game: state.game.toSnapshot(),
+      };
+      localStorage.setItem(SOLO_SAVE_KEY, JSON.stringify(snapshot));
+      state.soloResume = snapshot;
+    } catch (error) {
+      /* localStorage can be unavailable or full; the table still works. */
+    }
+  }
+
+  function scheduleSoloSave() {
+    if (state.mode !== "solo" || !state.game || state.setupOpen) return;
+    if (state.soloSaveTimer) clearTimeout(state.soloSaveTimer);
+    state.soloSaveTimer = setTimeout(() => {
+      state.soloSaveTimer = null;
+      saveSoloGame();
+    }, 180);
+  }
+
+  function clearSoloSave() {
+    if (state.soloSaveTimer) {
+      clearTimeout(state.soloSaveTimer);
+      state.soloSaveTimer = null;
+    }
+    removeSoloSaveKey();
+    state.soloResume = null;
+    updateSoloResumeCard();
+  }
+
+  function updateSoloResumeCard() {
+    if (!el.soloResumeCard) return;
+    const save = state.soloResume;
+    const visible = Boolean(save) && state.setupMode === "solo";
+    el.soloResumeCard.hidden = !visible;
+    if (!visible) return;
+    const hero = soloSaveHero(save);
+    if (!hero) {
+      el.soloResumeCard.hidden = true;
+      return;
+    }
+    const game = save.game;
+    const bots = game.players.filter((player) => !player.isHuman).length;
+    el.soloResumeTitle.textContent = "继续上次牌局";
+    el.soloResumeMeta.textContent =
+      "第 " +
+      game.handNumber +
+      " 手 · 筹码 " +
+      format(hero.chips) +
+      " · " +
+      (game.variant === "short" ? "短牌 6+" : "标准德州") +
+      " · " +
+      bots +
+      " 位对手";
+  }
+
+  function resumeSoloGame() {
+    const save = loadSoloSave();
+    if (!save) {
+      clearSoloSave();
+      toast("本机存档已失效，请重新开始。", { duration: 3000 });
+      return;
+    }
+    clearTimer();
+    closeModal(false, false);
+    closeQuickChat();
+    stopChatVoice();
+    document.querySelectorAll(".seat-chat-bubble").forEach((node) => node.remove());
+
+    state.settings = save.settings;
+    saveSettings(state.settings);
+    state.mode = "solo";
+    state.setupMode = "solo";
+    state.setupOpen = false;
+    state.setupShown = false;
+    state.paused = false;
+    state.beginning = false;
+    state.pending = null;
+    state.thinkingPlayerId = null;
+    state.recordedSoloGameId = null;
+    state.game = save.game;
+    state.hero = save.hero;
+    state.hero.isYou = true;
+    for (const player of state.game.players) {
+      if (player.isHuman) player.isYou = player.id === state.hero.id;
+    }
+    state.ais = new Map();
+    for (const player of state.game.players) {
+      if (!player.isHuman) state.ais.set(player.id, new PokerAI(state.settings.difficulty));
+    }
+    state.lastBoardCount = 0;
+    state.lastHand = -1;
+    state.lastLevel = state.game.blindLevel;
+    state.lastResultHand = state.game.handResult ? state.game.handNumber : 0;
+    state.lastResultSoundHand = state.lastResultHand;
+    state.lastTurnSignal = "";
+    state.lastTimerWarnSignal = "";
+    state.controlKey = "";
+    state.autoNext = false;
+    state.online.connected = false;
+    state.soloResume = save;
+
+    el.app.classList.remove("is-online");
+    el.lobbyOverlay.hidden = true;
+    el.onlinePill.hidden = true;
+    el.tableEmpty.hidden = true;
+    applySettingsToForm();
+    updateSoundButton();
+    buildSeats();
+    updateStaticUi();
+    hideSetup();
+    renderAll(true);
+    try {
+      history.replaceState(null, "", location.pathname);
+    } catch (error) {
+      /* ignore */
+    }
+    toast("已恢复上次牌局 · 第 " + state.game.handNumber + " 手", { gold: true, duration: 2600 });
+    setTimeout(() => {
+      if (state.mode === "solo" && state.game === save.game) advanceGame();
+    }, 260);
+  }
+
+  function confirmDiscardSoloSave() {
+    openModal({
+      eyebrow: "DISCARD SAVE",
+      title: "放弃这局存档？",
+      body:
+        '<p class="confirm-copy">这会删除本机保存的牌局进度，无法恢复。已经结束的历史战绩不会受影响。</p>',
+      actions: [
+        { label: "保留存档", className: "", onClick: () => true },
+        {
+          label: "放弃存档",
+          className: "danger",
+          onClick: () => {
+            closeModal(false, false);
+            clearSoloSave();
+            sound.click();
+            toast("已清除本机牌局存档", { duration: 2200 });
+            return false;
+          },
+        },
+      ],
+    });
+  }
+
+  function promptSoloResume() {
+    const save = loadSoloSave();
+    if (!save) {
+      clearSoloSave();
+      beginGame();
+      return;
+    }
+    state.soloResume = save;
+    const hero = soloSaveHero(save);
+    openModal({
+      eyebrow: "CONTINUE OR NEW",
+      title: "继续上次牌局？",
+      body:
+        '<p class="confirm-copy">你有一局进行中的牌局：第 ' +
+        save.game.handNumber +
+        " 手，筹码 " +
+        format(hero ? hero.chips : 0) +
+        "。开始新牌局会覆盖这份本机存档。</p>",
+      actions: [
+        {
+          label: "继续上次牌局",
+          className: "primary",
+          onClick: () => {
+            closeModal(false, false);
+            resumeSoloGame();
+            return false;
+          },
+        },
+        {
+          label: "开始新牌局",
+          className: "danger",
+          onClick: () => {
+            closeModal(false, false);
+            clearSoloSave();
+            beginGame();
+            return false;
+          },
+        },
+      ],
+    });
+  }
+
   function recordSoloResult(game) {
     if (!game || !state.hero) return;
     if (state.recordedSoloGameId === game.id) return;
@@ -304,6 +563,7 @@
     const rows = loadSoloHistory();
     rows.unshift(entry);
     saveSoloHistory(rows);
+    clearSoloSave();
   }
 
   function soloHistoryFor(name) {
@@ -724,9 +984,125 @@
     }
   }
 
+  function loadRecentRooms() {
+    try {
+      const raw = localStorage.getItem(ONLINE_RECENT_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((entry) => entry && /^\d{4}$/.test(String(entry.code || "")))
+        .slice(0, ONLINE_RECENT_LIMIT);
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function saveRecentRooms(rows) {
+    try {
+      localStorage.setItem(ONLINE_RECENT_KEY, JSON.stringify(rows.slice(0, ONLINE_RECENT_LIMIT)));
+    } catch (error) {
+      /* ignore */
+    }
+  }
+
+  function rememberOnlineRoom(code, view) {
+    if (!/^\d{4}$/.test(String(code || ""))) return;
+    const previous = loadRecentRooms().filter((entry) => entry.code !== code);
+    const you = view && view.you;
+    const status = view && view.status;
+    previous.unshift({
+      code: String(code),
+      name: you && you.name ? you.name : state.settings.name || "你",
+      status: status === "playing" || status === "done" ? status : "lobby",
+      hand: view && view.game ? Number(view.game.handNumber) || 0 : 0,
+      savedAt: Date.now(),
+    });
+    saveRecentRooms(previous);
+    renderRecentRooms();
+  }
+
+  function forgetRecentRoom(code) {
+    saveRecentRooms(loadRecentRooms().filter((entry) => entry.code !== String(code)));
+    renderRecentRooms();
+  }
+
+  function recentRoomStatus(entry) {
+    if (entry.status === "done") return "已结束 · 查看结果";
+    if (entry.status === "playing") return entry.hand ? "进行中 · 第 " + entry.hand + " 手" : "进行中";
+    return "等待开始";
+  }
+
+  function renderRecentRooms() {
+    if (!el.recentRooms || !el.recentRoomsList) return;
+    const cutoff = Date.now() - ONLINE_RECENT_MAX_AGE_MS;
+    const rows = loadRecentRooms().filter((entry) => !entry.savedAt || entry.savedAt >= cutoff);
+    const visible = state.setupMode === "online" && rows.length > 0;
+    el.recentRooms.hidden = !visible;
+    if (!visible) {
+      el.recentRoomsList.innerHTML = "";
+      return;
+    }
+    el.recentRoomsList.innerHTML = rows
+      .map(
+        (entry) =>
+          '<button type="button" class="recent-room" data-room-code="' +
+          escapeHtml(entry.code) +
+          '" title="继续房间 ' +
+          escapeHtml(entry.code) +
+          '">' +
+          '<span class="recent-room-main">' +
+          '<span class="recent-room-code">' +
+          escapeHtml(entry.code) +
+          "</span>" +
+          '<span class="recent-room-meta">' +
+          escapeHtml(recentRoomStatus(entry)) +
+          "</span></span>" +
+          '<span class="recent-room-arrow" aria-hidden="true">→</span>' +
+          "</button>"
+      )
+      .join("");
+  }
+
+  async function resumeRecentRoom(code) {
+    const clean = String(code || "").replace(/\D/g, "").slice(0, 4);
+    if (clean.length !== 4) return;
+    const saved = loadOnlineSession(clean);
+    if (!saved) {
+      forgetRecentRoom(clean);
+      toast("这个房间的本机登录凭证已失效，请重新加入。", { duration: 3600 });
+      return;
+    }
+    el.joinCodeInput.value = clean;
+    setJoinBusy(true);
+    try {
+      const result = await onlineApi(
+        "check",
+        { room: clean, token: saved },
+        ONLINE_CHECK_TIMEOUT_MS
+      );
+      if (result.view) {
+        enterOnlineSession(clean, saved, result.view);
+        return;
+      }
+      forgetRecentRoom(clean);
+      toast("房间暂时无法恢复，请稍后重试。", { duration: 3600 });
+    } catch (error) {
+      if (error.status === 401 || error.status === 404) {
+        clearOnlineSession(clean);
+        forgetRecentRoom(clean);
+        toast("这个房间已经结束或存档已过期。", { duration: 4200 });
+      } else {
+        toast("服务器正在唤醒，房间号已保留，请稍后再点一次。", { duration: 4800 });
+      }
+    } finally {
+      setJoinBusy(false);
+    }
+  }
+
   async function onlineApi(name, body, timeoutMs) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs || 10000);
+    const timer = setTimeout(() => controller.abort(), timeoutMs || ONLINE_REQUEST_TIMEOUT_MS);
     let response;
     try {
       response = await fetch("/api/" + name, {
@@ -824,6 +1200,8 @@
     el.setup.classList.toggle("is-online-mode", online);
     el.botFillToggle.checked = Boolean(state.settings.botFill);
     setupModeLabel(mode);
+    updateSoloResumeCard();
+    renderRecentRooms();
     if (!silent) sound.click();
   }
 
@@ -1098,6 +1476,7 @@
     state.online.lastStateAt = 0;
     state.online.lastLogId = 0;
     state.online.lastChatId = 0;
+    state.online.lastRememberKey = "";
     state.online.chatReady = false;
     state.online.chatSending = false;
     preloadChatVoices();
@@ -1108,6 +1487,7 @@
     state.ais = new Map();
     resetTableForOnline();
     saveOnlineSession(code, token);
+    rememberOnlineRoom(code, view);
     try {
       history.replaceState(null, "", location.pathname + "?room=" + encodeURIComponent(code));
     } catch (error) {
@@ -1128,7 +1508,7 @@
 
   async function onlineGet(pathAndQuery) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4500);
+    const timer = setTimeout(() => controller.abort(), ONLINE_STATE_TIMEOUT_MS);
     try {
       const response = await fetch(pathAndQuery, {
         method: "GET",
@@ -1254,7 +1634,7 @@
       state.online.errorCount += 1;
       updateOnlinePill();
       if (state.online.errorCount === 3) {
-        onlineApi("check", { room: code, token })
+        onlineApi("check", { room: code, token }, ONLINE_CHECK_TIMEOUT_MS)
           .then((result) => {
             if (result.view && state.online.eventSource === es) handleOnlineView(result.view);
           })
@@ -1375,6 +1755,12 @@
     state.setupOpen = false;
     state.setupShown = false;
     state.online.playerId = (view.you && view.you.id) || state.online.playerId;
+    const rememberKey =
+      view.room + ":" + view.status + ":" + (view.game ? Number(view.game.handNumber) || 0 : 0);
+    if (state.online.lastRememberKey !== rememberKey) {
+      state.online.lastRememberKey = rememberKey;
+      rememberOnlineRoom(view.room, view);
+    }
     syncOnlineChat(view.chat);
     el.app.classList.add("is-online");
     el.setup.hidden = true;
@@ -1541,7 +1927,10 @@
         /* ignore */
       }
     }
-    if (code) clearOnlineSession(code);
+    if (code) {
+      clearOnlineSession(code);
+      forgetRecentRoom(code);
+    }
     state.mode = "solo";
     state.game = null;
     state.hero = null;
@@ -1561,6 +1950,7 @@
       errorCount: 0,
       lastLogId: 0,
       lastChatId: 0,
+      lastRememberKey: "",
       chatReady: false,
       chatSending: false,
       pollTimer: null,
@@ -1600,7 +1990,10 @@
         keepalive: true,
       }).catch(() => {});
     }
-    if (code) clearOnlineSession(code);
+    if (code) {
+      clearOnlineSession(code);
+      forgetRecentRoom(code);
+    }
     state.mode = "solo";
     state.game = null;
     state.hero = null;
@@ -1620,6 +2013,7 @@
       errorCount: 0,
       lastLogId: 0,
       lastChatId: 0,
+      lastRememberKey: "",
       chatReady: false,
       chatSending: false,
       pollTimer: null,
@@ -1644,19 +2038,75 @@
     toast("已离开联机房间", { duration: 1800 });
   }
 
+  function temporarilyLeaveOnline() {
+    const code = state.online.code;
+    if (!code) {
+      leaveOnlineRoom();
+      return;
+    }
+    rememberOnlineRoom(code, state.online.view);
+    stopOnlinePolling();
+    if (state.online.eventSource) {
+      try {
+        state.online.eventSource.close();
+      } catch (error) {
+        /* ignore */
+      }
+    }
+    state.online.eventSource = null;
+    state.online.connected = false;
+    state.online.actionPending = false;
+    state.mode = "solo";
+    state.game = null;
+    state.hero = null;
+    state.ais = new Map();
+    state.paused = true;
+    clearTimer();
+    closeQuickChat();
+    stopChatVoice();
+    document.querySelectorAll(".seat-chat-bubble").forEach((node) => node.remove());
+    closeModal(false, false);
+    el.app.classList.remove("is-online");
+    el.lobbyOverlay.hidden = true;
+    el.onlinePill.hidden = true;
+    el.tableEmpty.hidden = false;
+    el.seats.innerHTML = "";
+    el.community.innerHTML = "";
+    try {
+      history.replaceState(null, "", location.pathname + "?room=" + encodeURIComponent(code));
+    } catch (error) {
+      /* ignore */
+    }
+    showSetup();
+    setSetupMode("online", true);
+    toast("房间 " + code + " 已保留 · 24 小时内可继续", { gold: true, duration: 3600 });
+  }
+
   function confirmLeaveOnline() {
     const inGame = state.online.status === "playing" || state.online.status === "done";
+    const code = state.online.code || "";
     openModal({
       eyebrow: "LEAVE ROOM",
-      title: "离开房间？",
+      title: inGame ? "暂离，还是退出？" : "离开房间？",
       pause: true,
       body: inGame
-        ? '<p class="confirm-copy">离开后你的座位会由系统自动弃牌处理，这一局将无法继续。确定要离开吗？</p>'
-        : '<p class="confirm-copy">离开后房间号会失效，确定要离开吗？</p>',
+        ? '<p class="confirm-copy">只离开一会儿，选「暂离」：房间 ' +
+          escapeHtml(code) +
+          " 会保留 24 小时，本机可以随时回来。</p>" +
+          '<p class="confirm-copy">多人局里其他玩家可以继续，轮到你时会自动弃牌；如果选「退出房间」，座位会立即释放，无法回到原座位。</p>'
+        : '<p class="confirm-copy">「暂离」会保留房间和你的房主身份，稍后可以从最近房间回来；「退出房间」会离开并释放座位。</p>',
       actions: [
-        { label: "继续游戏", className: "", onClick: () => true },
         {
-          label: "离开房间",
+          label: "暂离，保留座位",
+          className: "primary",
+          onClick: () => {
+            closeModal(false, false);
+            temporarilyLeaveOnline();
+            return false;
+          },
+        },
+        {
+          label: "退出房间",
           className: "danger",
           onClick: () => {
             closeModal(false, false);
@@ -1679,13 +2129,17 @@
     setStartBusy(true, "创建中…");
     sound.unlock();
     try {
-      const result = await onlineApi("create", {
-        name,
-        botFill: state.settings.botFill,
-        difficulty: state.settings.difficulty,
-        variant: state.settings.variant,
-        startingChips: state.settings.chips,
-      });
+      const result = await onlineApi(
+        "create",
+        {
+          name,
+          botFill: state.settings.botFill,
+          difficulty: state.settings.difficulty,
+          variant: state.settings.variant,
+          startingChips: state.settings.chips,
+        },
+        ONLINE_CHECK_TIMEOUT_MS
+      );
       enterOnlineSession(result.room, result.token, result.view);
     } catch (error) {
       toast(error.message || "创建房间失败", { duration: 3800 });
@@ -1711,17 +2165,29 @@
     try {
       if (saved) {
         try {
-          const checked = await onlineApi("check", { room: code, token: saved });
+          const checked = await onlineApi(
+            "check",
+            { room: code, token: saved },
+            ONLINE_CHECK_TIMEOUT_MS
+          );
           if (checked.view) {
             enterOnlineSession(code, saved, checked.view);
             return;
           }
         } catch (error) {
-          if (error.status === 401 || error.status === 404) clearOnlineSession(code);
-          else throw error;
+          if (error.status === 401 || error.status === 404) {
+            clearOnlineSession(code);
+            forgetRecentRoom(code);
+          } else {
+            throw error;
+          }
         }
       }
-      const result = await onlineApi("join", { room: code, name });
+      const result = await onlineApi(
+        "join",
+        { room: code, name },
+        ONLINE_CHECK_TIMEOUT_MS
+      );
       enterOnlineSession(result.room, result.token, result.view);
     } catch (error) {
       toast(error.message || "加入房间失败", { duration: 3800 });
@@ -1841,8 +2307,17 @@
       state.settings.name = (el.playerNameInput.value || "").trim().slice(0, 10) || "你";
       saveSettings(state.settings);
       sound.unlock();
-      if (state.setupMode === "online") createOnlineRoom();
-      else beginGame();
+      if (state.setupMode === "online") {
+        createOnlineRoom();
+      } else {
+        const saved = loadSoloSave();
+        if (saved) {
+          state.soloResume = saved;
+          promptSoloResume();
+        } else {
+          beginGame();
+        }
+      }
     });
 
     el.modeSwitch.addEventListener("click", (event) => {
@@ -1858,6 +2333,20 @@
     });
 
     el.joinRoomBtn.addEventListener("click", () => joinOnlineRoom());
+    el.recentRoomsList.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-room-code]");
+      if (!button) return;
+      sound.click();
+      resumeRecentRoom(button.dataset.roomCode);
+    });
+    el.resumeSoloBtn.addEventListener("click", () => {
+      sound.click();
+      resumeSoloGame();
+    });
+    el.discardSoloBtn.addEventListener("click", () => {
+      sound.click();
+      confirmDiscardSoloSave();
+    });
     el.joinCodeInput.addEventListener("input", () => {
       el.joinCodeInput.value = el.joinCodeInput.value.replace(/\D/g, "").slice(0, 4);
     });
@@ -1908,6 +2397,7 @@
     stopChatVoice();
     document.querySelectorAll(".seat-chat-bubble").forEach((node) => node.remove());
     clearTimer();
+    if (state.mode === "solo" && state.game && !state.setupOpen) saveSoloGame();
     state.beginning = false;
     state.paused = true;
     state.setupOpen = true;
@@ -1944,6 +2434,7 @@
     if (state.mode === "online") return;
     closeQuickChat();
     if (state.beginning || !state.setupShown) return;
+    clearSoloSave();
     state.beginning = true;
     clearTimer();
     state.paused = false;
@@ -1960,6 +2451,11 @@
     state.setupMode = "solo";
     state.recordedSoloGameId = null;
     state.online.connected = false;
+    try {
+      history.replaceState(null, "", location.pathname);
+    } catch (error) {
+      /* ignore */
+    }
     el.app.classList.remove("is-online");
     el.lobbyOverlay.hidden = true;
     el.onlinePill.hidden = true;
@@ -2121,6 +2617,7 @@
     renderSidebar();
     renderLog();
     renderDock();
+    scheduleSoloSave();
   }
 
   function updateStaticUi() {
@@ -2848,7 +3345,11 @@
       sound.error();
       toast(error.message || "操作未成功", { duration: 3200 });
       try {
-        const result = await onlineApi("check", { room: state.online.code, token: state.online.token });
+        const result = await onlineApi(
+          "check",
+          { room: state.online.code, token: state.online.token },
+          ONLINE_CHECK_TIMEOUT_MS
+        );
         if (result.view) handleOnlineView(result.view);
       } catch (checkError) {
         /* SSE will catch up if possible */
@@ -3469,24 +3970,47 @@
   /* ---------------------------------------------------------- init */
 
   async function probeOnlineServer() {
+    let unavailable = false;
     if (location.protocol === "file:") {
       state.onlineAvailable = false;
     } else {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 1800);
-      try {
-        const response = await fetch("/api/health", { signal: controller.signal, cache: "no-store" });
-        state.onlineAvailable = response.ok;
-      } catch (error) {
-        state.onlineAvailable = false;
+      // Render free instances can take 30s+ to wake from a cold start. Retry
+      // instead of disabling online play on the first short timeout.
+      const attempts = [4000, 15000];
+      for (const timeoutMs of attempts) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const response = await fetch("/api/health", {
+            signal: controller.signal,
+            cache: "no-store",
+          });
+          if (response.ok) {
+            state.onlineAvailable = true;
+            break;
+          }
+          if (response.status === 404 || response.status === 405) {
+            unavailable = true;
+            break;
+          }
+        } catch (error) {
+          /* The server may be waking; keep online enabled and retry. */
+        } finally {
+          clearTimeout(timer);
+        }
       }
-      clearTimeout(timer);
+      if (unavailable) state.onlineAvailable = false;
     }
     const onlineTab = $("#modeSwitch button[data-setup-mode='online']");
-    if (!state.onlineAvailable && onlineTab) {
-      onlineTab.classList.add("is-unavailable");
-      onlineTab.setAttribute("aria-disabled", "true");
-      onlineTab.title = "联机模式需要启动 Node 服务（node server.js）";
+    if (onlineTab) {
+      onlineTab.classList.toggle("is-unavailable", !state.onlineAvailable);
+      if (state.onlineAvailable) {
+        onlineTab.removeAttribute("aria-disabled");
+        onlineTab.removeAttribute("title");
+      } else {
+        onlineTab.setAttribute("aria-disabled", "true");
+        onlineTab.title = "联机模式需要启动 Node 服务（node server.js）";
+      }
     }
     if (!state.onlineAvailable && state.setupMode === "online") {
       setSetupMode("solo", true);
@@ -3495,6 +4019,7 @@
 
   async function prepareInitialRoute() {
     if (location.protocol === "file:" || !state.onlineAvailable) return;
+    if (state.mode !== "solo" || !state.setupOpen) return;
     const params = new URLSearchParams(location.search);
     const code = (params.get("room") || "").replace(/\D/g, "").slice(0, 4);
     if (code.length !== 4) return;
@@ -3508,13 +4033,24 @@
       return;
     }
     try {
-      const result = await onlineApi("check", { room: code, token: saved });
+      const result = await onlineApi(
+        "check",
+        { room: code, token: saved },
+        ONLINE_CHECK_TIMEOUT_MS
+      );
       if (result.view) {
         enterOnlineSession(code, saved, result.view);
       }
     } catch (error) {
-      clearOnlineSession(code);
-      toast("上次的房间已失效，请输入房间号重新加入。", { duration: 3800 });
+      if (error.status === 401 || error.status === 404) {
+        clearOnlineSession(code);
+        forgetRecentRoom(code);
+        toast("上次的房间已失效，请输入房间号重新加入。", { duration: 3800 });
+      } else {
+        toast("服务器正在唤醒，房间号已保留；稍后可在「最近房间」继续。", {
+          duration: 5200,
+        });
+      }
       setTimeout(() => {
         if (state.setupOpen) el.joinCodeInput.focus({ preventScroll: true });
       }, 650);
@@ -3522,12 +4058,14 @@
   }
 
   function init() {
+    state.soloResume = loadSoloSave();
     applySettingsToForm();
     bindSetupEvents();
     bindGameEvents();
     updateSoundButton();
     setDockMode("idle");
     renderSetupPreview();
+    renderRecentRooms();
     // Open the setup screen without focusing an invisible element too early.
     setTimeout(() => {
       if (!state.setupOpen) return;
@@ -3538,7 +4076,17 @@
       if (state.mode === "online") updateTurnClock();
     }, 500);
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden && state.mode === "online") pollOnlineState();
+      if (document.hidden) {
+        if (state.mode === "solo" && state.game && !state.setupOpen) saveSoloGame();
+        return;
+      }
+      if (state.mode === "online") pollOnlineState();
+    });
+    window.addEventListener("pagehide", () => {
+      if (state.mode === "solo" && state.game && !state.setupOpen) saveSoloGame();
+      if (state.mode === "online" && state.online.code) {
+        rememberOnlineRoom(state.online.code, state.online.view);
+      }
     });
   }
 

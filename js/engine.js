@@ -939,6 +939,53 @@
       }
       this.version++;
     }
+
+    /* ------------------------------------------------------------ snapshots */
+
+    toSnapshot() {
+      const config = { ...this.config };
+      delete config.players;
+      const snapshot = { ...this, config };
+      return JSON.parse(JSON.stringify(snapshot));
+    }
+
+    static fromSnapshot(snapshot) {
+      if (
+        !snapshot ||
+        typeof snapshot !== "object" ||
+        !Array.isArray(snapshot.players) ||
+        snapshot.players.length < 2
+      ) {
+        throw new Error("Invalid poker game snapshot");
+      }
+      const copy = JSON.parse(JSON.stringify(snapshot));
+      const game = Object.create(PokerGame.prototype);
+      Object.assign(game, copy);
+      game.config = {
+        startingChips: 5000,
+        blindEvery: 8,
+        variant: "holdem",
+        ...(copy.config && typeof copy.config === "object" ? copy.config : {}),
+      };
+      delete game.config.players;
+      game.variant = copy.variant === "short" ? "short" : "holdem";
+      game.players = copy.players.map((player, index) => ({
+        ...player,
+        seat: Number.isInteger(player.seat) ? player.seat : index,
+        hole: Array.isArray(player.hole) ? player.hole : [],
+        bestHand: player.bestHand || null,
+      }));
+      game.community = Array.isArray(game.community) ? game.community : [];
+      game.deck = Array.isArray(game.deck) ? game.deck : [];
+      game.log = Array.isArray(game.log) ? game.log : [];
+      if (game.champion) {
+        const champion = game.players.find((player) => player.id === game.champion.id);
+        game.champion = champion || null;
+        if (game.handResult) game.handResult.champion = game.champion;
+      }
+      gameId = Math.max(gameId, Number(game.id) || 0);
+      return game;
+    }
   }
 
   return {

@@ -280,3 +280,27 @@ test("short deck AI plays legal hands and conserves chips", () => {
   }
   assert.ok(handsPlayed > 0);
 });
+
+test("game snapshot restores a hand exactly, including hidden cards", () => {
+  const game = makeGame(4, 2000, { dealerIndex: 0 });
+  game.startHand();
+  while (!game.streetComplete && game.currentPlayer) {
+    const legal = game.getLegalActions(game.currentPlayer.id);
+    game.act(game.currentPlayer.id, legal.canCheck ? "check" : "call");
+  }
+  game.advanceStreet();
+  const snapshot = game.toSnapshot();
+  const restored = PokerGame.fromSnapshot(snapshot);
+
+  assert.equal(restored.id, game.id);
+  assert.equal(restored.phase, "flop");
+  assert.equal(restored.pot, game.pot);
+  assert.equal(restored.currentBet, game.currentBet);
+  assert.equal(restored.currentPlayerId, game.currentPlayerId);
+  assert.deepEqual(restored.community, game.community);
+  assert.deepEqual(restored.deck, game.deck);
+  assert.deepEqual(restored.players.map((p) => p.hole), game.players.map((p) => p.hole));
+  assert.equal(restored.getTotalPot(), game.getTotalPot());
+  assert.equal(restored.getLegalActions(restored.currentPlayerId).canPlay, true);
+  assert.equal(restored.config.players, undefined);
+});

@@ -286,3 +286,28 @@ test("Cantonese quick chat audio is served with range support", async () => {
     assert.equal((await openEnded.arrayBuffer()).byteLength, fullSize);
   });
 });
+
+test("the last human leaving a playing room deletes it", async () => {
+  await withServer(async (base) => {
+    const created = await post(base, "/api/create", {
+      name: "最后一个",
+      botFill: true,
+      difficulty: "standard",
+      startingChips: 5000,
+    });
+    await post(base, "/api/start", {
+      room: created.data.room,
+      token: created.data.token,
+    });
+    const left = await post(base, "/api/leave", {
+      room: created.data.room,
+      token: created.data.token,
+    });
+    assert.equal(left.response.status, 200);
+    assert.equal(rooms.has(created.data.room), false);
+    const state = await fetch(
+      base + "/api/state?room=" + created.data.room + "&token=" + created.data.token
+    );
+    assert.equal(state.status, 401);
+  });
+});

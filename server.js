@@ -8,6 +8,7 @@ const crypto = require("node:crypto");
 const { PokerGame } = require("./js/engine.js");
 const { PokerAI, createBotLineup } = require("./js/ai.js");
 const { StatsStore } = require("./stats-store.js");
+const { RoomStore } = require("./room-store.js");
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT) || 8787;
@@ -37,11 +38,14 @@ const NEXT_HAND_MS = 9000;
 const STREET_MS = 800;
 const BOT_MIN_MS = 700;
 const BOT_MAX_MS = 1400;
-const ROOM_TTL_MS = 2 * 60 * 60 * 1000;
-const DONE_TTL_MS = 30 * 60 * 1000;
+const ROOM_TTL_MS = 24 * 60 * 60 * 1000;
+const DONE_TTL_MS = 2 * 60 * 60 * 1000;
+const ROOM_SAVE_DEBOUNCE_MS = 250;
 const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, "data");
 
 const rooms = new Map();
+const roomSaveTimers = new Map();
+let roomStore = null;
 const statsStore = new StatsStore({
   dataDir: DATA_DIR,
   databaseUrl: process.env.DATABASE_URL || "",
@@ -169,6 +173,7 @@ function allHumansEliminated(room) {
 function touch(room) {
   room.seq += 1;
   room.updatedAt = Date.now();
+  scheduleRoomSave(room);
 }
 
 function clearRoomTimer(room) {
@@ -176,6 +181,205 @@ function clearRoomTimer(room) {
     clearTimeout(room.timer);
     room.timer = null;
   }
+}
+
+/* ---------------------------------------------------------- room persistence */
+
+function snapshotRoom(room) {
+  if (!room || !room.code) return null;
+  return {
+    version: 1,
+    savedAt: Date.now(),
+    room: {
+      code: room.code,
+      createdAt: room.createdAt,
+      updatedAt: room.updatedAt,
+      status: room.status,
+      hostId: room.hostId,
+      humanSeq: room.humanSeq,
+      botFill: room.botFill,
+      difficulty: room.difficulty,
+      variant: room.variant,
+      startingChips: room.startingChips,
+      humans: room.humans.map((human) => ({ ...human, connected: false })),
+      seq: room.seq,
+      turnPlayerId: room.turnPlayerId,
+      paused: room.paused,
+      chat: room.chat.slice(-30),
+      chatSeq: room.chatSeq,
+      startedAt: room.startedAt || null,
+      statsFinalized: Boolean(room.statsFinalized),
+      lastStatsHand: room.lastStatsHand || 0,
+      humanStats: room.humanStats ? [...room.humanStats.entries()] : [],
+      game: room.game ? room.game.toSnapshot() : null,
+    },
+  };
+}
+
+function hydrateRoom(payload) {
+  const data = payload && payload.room ? payload.room : payload;
+  if (!data || typeof data !== "object" || !/^\d{4}$/.test(String(data.code || ""))) {
+    return null;
+  }
+  const humans = Array.isArray(data.humans)
+    ? data.humans
+        .filter((human) => human && human.id && human.name)
+        .map((human) => ({ ...human, connected: false }))
+    : [];
+  if (!humans.some((human) => !human.left)) return null;
+
+  let game = null;
+  if (data.game) {
+    try {
+      game = PokerGame.fromSnapshot(data.game);
+    } catch (error) {
+      return null;
+    }
+  }
+  const status = ["lobby", "playing", "done"].includes(data.status) ? data.status : "lobby";
+  if (status !== "lobby" && !game) return null;
+  // The process may have stopped between settling the hand and marking the
+  // room done. Preserve the result instead of resurrecting a finished game.
+  const finalStatus = game && game.gameOver ? "done" : status;
+
+  const room = {
+    code: String(data.code),
+    createdAt: Number(data.createdAt) || Date.now(),
+    updatedAt: Number(data.updatedAt) || Number(payload.savedAt) || Date.now(),
+    status: finalStatus,
+    humans,
+    hostId: data.hostId || null,
+    humanSeq: Number(data.humanSeq) || 0,
+    botFill: data.botFill !== false,
+    difficulty: ["casual", "standard", "pro"].includes(data.difficulty)
+      ? data.difficulty
+      : "standard",
+    variant: data.variant === "short" ? "short" : "holdem",
+    startingChips: [2000, 5000, 10000].includes(Number(data.startingChips))
+      ? Number(data.startingChips)
+      : 5000,
+    game,
+    ais: new Map(),
+    seq: Number(data.seq) || 1,
+    timer: null,
+    turnDeadline: 0,
+    turnPlayerId: data.turnPlayerId || null,
+    paused: finalStatus === "playing",
+    clients: new Set(),
+    chat: Array.isArray(data.chat) ? data.chat.slice(-30) : [],
+    chatSeq: Number(data.chatSeq) || 0,
+    startedAt: Number(data.startedAt) || null,
+    statsFinalized: Boolean(data.statsFinalized),
+    lastStatsHand: Number(data.lastStatsHand) || 0,
+    humanStats: new Map(Array.isArray(data.humanStats) ? data.humanStats : []),
+  };
+
+  if (!room.humanStats.size) {
+    for (const human of room.humans) room.humanStats.set(human.id, { hands: 0, won: 0 });
+  }
+  for (const human of room.humans) {
+    const numeric = Number(String(human.id).replace(/^h/, ""));
+    if (Number.isFinite(numeric)) room.humanSeq = Math.max(room.humanSeq, numeric);
+  }
+  const active = activeHumans(room);
+  if (!active.some((human) => human.id === room.hostId)) {
+    room.hostId = active[0] ? active[0].id : null;
+    for (const human of room.humans) human.isHost = human.id === room.hostId;
+  }
+  if (game) {
+    for (const player of game.players) {
+      if (!player.isHuman) room.ais.set(player.id, new PokerAI(room.difficulty));
+    }
+  }
+  return room;
+}
+
+function isSnapshotExpired(payload) {
+  const data = payload && payload.room ? payload.room : payload;
+  if (!data) return true;
+  const updatedAt = Number(data.updatedAt) || Number(payload.savedAt) || 0;
+  if (!updatedAt) return true;
+  const idle = Date.now() - updatedAt;
+  if (data.status === "done" && idle > DONE_TTL_MS) return true;
+  return idle > ROOM_TTL_MS;
+}
+
+function persistRoomNow(room) {
+  if (!roomStore || !room || !room.code) return;
+  if (!activeHumans(room).length) {
+    roomStore.remove(room.code);
+    return;
+  }
+  const snapshot = snapshotRoom(room);
+  if (snapshot) roomStore.save(snapshot);
+}
+
+function scheduleRoomSave(room) {
+  if (!roomStore || !room || !room.code) return;
+  const code = room.code;
+  const existing = roomSaveTimers.get(code);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    roomSaveTimers.delete(code);
+    persistRoomNow(room);
+  }, ROOM_SAVE_DEBOUNCE_MS);
+  if (typeof timer.unref === "function") timer.unref();
+  roomSaveTimers.set(code, timer);
+}
+
+function deleteRoom(room) {
+  if (!room) return;
+  clearRoomTimer(room);
+  const saveTimer = roomSaveTimers.get(room.code);
+  if (saveTimer) clearTimeout(saveTimer);
+  roomSaveTimers.delete(room.code);
+  rooms.delete(room.code);
+  if (roomStore) roomStore.remove(room.code);
+}
+
+function flushRoomSaves() {
+  for (const [code, timer] of roomSaveTimers) {
+    clearTimeout(timer);
+    roomSaveTimers.delete(code);
+    const room = rooms.get(code);
+    if (room) persistRoomNow(room);
+  }
+}
+
+async function initRoomPersistence(options = {}) {
+  if (roomStore) return roomStore;
+  const dataDir = options.dataDir || DATA_DIR;
+  const databaseUrl =
+    options.databaseUrl !== undefined ? options.databaseUrl : process.env.DATABASE_URL || "";
+  roomStore = new RoomStore({ dataDir, databaseUrl });
+  await roomStore.ready;
+  return roomStore;
+}
+
+async function restoreRooms() {
+  if (!roomStore) return 0;
+  for (const payload of roomStore.all()) {
+    const data = payload && payload.room ? payload.room : payload;
+    const code = data && data.code;
+    if (!code) continue;
+    if (isSnapshotExpired(payload)) {
+      roomStore.remove(code);
+      continue;
+    }
+    try {
+      const room = hydrateRoom(payload);
+      if (!room) {
+        roomStore.remove(code);
+        continue;
+      }
+      rooms.set(room.code, room);
+      if (room.status === "done") finalizeRoomStats(room);
+    } catch (error) {
+      console.error("failed to restore room", code, error);
+      roomStore.remove(code);
+    }
+  }
+  return rooms.size;
 }
 
 function publicHuman(human) {
@@ -728,6 +932,7 @@ function createRoom(options) {
   room.humans.push(human);
   room.hostId = human.id;
   rooms.set(code, room);
+  scheduleRoomSave(room);
   return { room, human };
 }
 
@@ -850,8 +1055,7 @@ function removeHuman(room, human) {
       for (const candidate of room.humans) candidate.isHost = candidate.id === room.hostId;
     }
     if (!activeHumans(room).length) {
-      clearRoomTimer(room);
-      rooms.delete(room.code);
+      deleteRoom(room);
       return;
     }
     roomChanged(room);
@@ -878,6 +1082,7 @@ function removeHuman(room, human) {
   }
   if (!activeHumans(room).length) {
     finishRoom(room);
+    deleteRoom(room);
     return;
   }
   broadcast(room);
@@ -908,6 +1113,7 @@ function handleEvents(req, res, url) {
   room.clients.add(client);
   human.connected = true;
   room.updatedAt = Date.now();
+  scheduleRoomSave(room);
   broadcast(room);
   if (room.status === "playing") {
     if (room.paused) {
@@ -939,6 +1145,7 @@ function handleEvents(req, res, url) {
       }
     }
     room.updatedAt = Date.now();
+    scheduleRoomSave(room);
     broadcast(room);
     if (room.status === "playing" && anyHumanOnline(room)) armRoom(room);
   };
@@ -961,6 +1168,7 @@ async function handleApi(req, res, url) {
         storageError: statsStore.storageError,
         persistence: statsStore.status().persistence,
       },
+      roomStorage: roomStore ? roomStore.status() : { mode: "memory", rooms: rooms.size },
     });
     return;
   }
@@ -1132,6 +1340,7 @@ async function handleApi(req, res, url) {
       room.chat.push(message);
       if (room.chat.length > 30) room.chat.splice(0, room.chat.length - 30);
       room.updatedAt = now;
+      scheduleRoomSave(room);
       broadcastChat(room, message);
       sendJson(res, 200, { ok: true, message });
       return;
@@ -1320,22 +1529,50 @@ const cleaner = setInterval(() => {
   for (const [code, room] of rooms) {
     const idle = now - room.updatedAt;
     if (room.status === "done" && idle > DONE_TTL_MS && room.clients.size === 0) {
-      clearRoomTimer(room);
-      rooms.delete(code);
+      deleteRoom(room);
     } else if (idle > ROOM_TTL_MS && room.clients.size === 0) {
-      clearRoomTimer(room);
-      rooms.delete(code);
+      deleteRoom(room);
     }
   }
 }, 10 * 60 * 1000);
 cleaner.unref();
 
-if (require.main === module) {
-  server.listen(PORT, HOST, () => {
-    console.log("NOCTURNE HOLD'EM");
-    console.log("Local:   http://127.0.0.1:" + PORT);
-    console.log("Rooms:   in-memory (no database required)");
+async function main() {
+  await initRoomPersistence();
+  await restoreRooms();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(PORT, HOST, resolve);
   });
+  const mode = roomStore ? roomStore.status().mode : "memory";
+  console.log("NOCTURNE HOLD'EM");
+  console.log("Local:   http://127.0.0.1:" + PORT);
+  console.log("Rooms:   " + rooms.size + " restored · " + mode);
+  console.log("Retention: active " + ROOM_TTL_MS / 3600000 + "h · done " + DONE_TTL_MS / 3600000 + "h");
+}
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("failed to start", error);
+    process.exitCode = 1;
+  });
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    flushRoomSaves();
+    if (roomStore) {
+      try {
+        await roomStore.flush();
+      } catch (error) {
+        /* ignore */
+      }
+    }
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 2500).unref();
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 }
 
 module.exports = {
@@ -1349,4 +1586,16 @@ module.exports = {
   findRoom,
   findHuman,
   statsStore,
+  initRoomPersistence,
+  restoreRooms,
+  snapshotRoom,
+  hydrateRoom,
+  persistRoomNow,
+  flushRoomSaves,
+  deleteRoom,
+  ROOM_TTL_MS,
+  DONE_TTL_MS,
+  get roomStore() {
+    return roomStore;
+  },
 };

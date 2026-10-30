@@ -296,6 +296,18 @@
           </button>
         </div>
 
+        <div class="resume-card" id="soloResumeCard" hidden>
+          <div class="resume-card-copy">
+            <span class="eyebrow">CONTINUE · 本机存档</span>
+            <strong id="soloResumeTitle">继续上次牌局</strong>
+            <small id="soloResumeMeta">牌局进度会保存在这台设备</small>
+          </div>
+          <div class="resume-card-actions">
+            <button class="game-btn btn-raise resume-small" id="resumeSoloBtn" type="button">继续</button>
+            <button class="text-link" id="discardSoloBtn" type="button">放弃</button>
+          </div>
+        </div>
+
         <label class="field">
           <span class="field-label">你的昵称</span>
           <span class="input-wrap">
@@ -381,7 +393,15 @@
               <button type="button" id="joinRoomBtn">加入房间</button>
             </div>
           </div>
-          <p class="field-hint">创建后把房间号或邀请链接发给朋友，人来齐后由任意玩家开始。</p>
+          <div class="recent-rooms" id="recentRooms" hidden>
+            <div class="recent-rooms-head">
+              <span class="field-label">最近房间</span>
+              <small>本机凭证 · 保留 24 小时</small>
+            </div>
+            <div class="recent-rooms-list" id="recentRoomsList"></div>
+          </div>
+
+          <p class="field-hint">创建后把房间号或邀请链接发给朋友，人来齐后由任意玩家开始。暂离会保留座位，最近房间可直接继续。</p>
         </div>
 
         <button class="start-btn" id="startBtn" type="button">
