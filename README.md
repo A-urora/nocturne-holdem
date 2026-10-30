@@ -1,5 +1,7 @@
 # NOCTURNE · 网页版德州扑克
 
+**在线试玩：** [nocturne-holdem.onrender.com](https://nocturne-holdem.onrender.com)
+
 一套完整的无上限德州扑克（No-Limit Texas Hold'em）：
 
 - **单人模式**：纯静态，双击 `index.html` 就能和电脑玩家对战；
@@ -66,7 +68,7 @@ npm test
 
 ## 联机模式怎么实现
 
-`server.js` 是一个**零第三方依赖**的 Node HTTP 服务，同时做两件事：
+`server.js` 是一个零框架的 Node HTTP 服务（仅在持久化战绩时使用 `pg`），同时做两件事：
 
 1. 托管静态页面；
 2. 托管联机牌局。
@@ -154,7 +156,7 @@ PORT=3000 node server.js
 Netlify Drop: https://app.netlify.com/drop
 ```
 
-GitHub Pages 也已配置 `.github/workflows/pages.yml`。
+静态托管只支持单人模式；需要联机时请使用 Node/Render。
 
 ---
 
@@ -191,7 +193,6 @@ stats-store.js             排行榜/历史战绩存储（JSON 或 Postgres 快�
 tests/                     牌型、规则、AI、联机 API 与排行榜测试
 render.yaml                Render 一键部署配置
 Dockerfile                 容器部署
-.github/workflows/         测试与静态 Pages 工作流
 ```
 
 ### 技术要点
