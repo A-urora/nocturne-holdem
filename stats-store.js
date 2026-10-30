@@ -7,6 +7,13 @@ const path = require("node:path");
 const MAX_SESSIONS = 1000;
 const MAX_NAME = 12;
 
+let PoolClass = null;
+try {
+  ({ Pool: PoolClass } = require("pg"));
+} catch (error) {
+  /* pg is optional; local/static play still uses the JSON file. */
+}
+
 function nameKey(name) {
   return String(name || "").trim().slice(0, MAX_NAME).toLocaleLowerCase();
 }
@@ -24,9 +31,101 @@ class StatsStore {
   constructor(options = {}) {
     this.dataDir = options.dataDir || path.join(__dirname, "data");
     this.file = path.join(this.dataDir, "stats.json");
+    this.databaseUrl = String(options.databaseUrl || "").trim();
     this.sessions = [];
     this.storageError = "";
+    this.pool = null;
+    this.remoteReady = false;
+    this.remoteDirty = false;
+    this.remoteQueue = Promise.resolve();
     this._load();
+    if (this.databaseUrl) this._initDatabase();
+  }
+
+  _initDatabase() {
+    if (!PoolClass) {
+      this.storageError = "未安装 pg，战绩将只保存在本地 JSON 文件。";
+      return;
+    }
+    try {
+      const useSsl =
+        /sslmode=require/i.test(this.databaseUrl) ||
+        /\.render\.com/i.test(this.databaseUrl) ||
+        process.env.PGSSL === "true";
+      this.pool = new PoolClass({
+        connectionString: this.databaseUrl,
+        ssl: useSsl ? { rejectUnauthorized: false } : false,
+        max: 2,
+        connectionTimeoutMillis: 8000,
+      });
+      this._databaseReady = this._loadDatabase();
+    } catch (error) {
+      this.pool = null;
+      this.storageError = "连接战绩数据库失败：" + (error.message || "未知错误");
+    }
+  }
+
+  async _loadDatabase() {
+    if (!this.pool) return;
+    try {
+      await this.pool.query(
+        "CREATE TABLE IF NOT EXISTS nocturne_stats (" +
+          "id integer PRIMARY KEY, " +
+          "payload jsonb NOT NULL, " +
+          "updated_at timestamptz NOT NULL DEFAULT now())"
+      );
+      const result = await this.pool.query("SELECT payload FROM nocturne_stats WHERE id = 1");
+      const remoteSessions = result.rows[0] && result.rows[0].payload && result.rows[0].payload.sessions;
+      if (Array.isArray(remoteSessions)) {
+        this.sessions = remoteSessions
+          .filter((session) => session && session.id && Array.isArray(session.humans))
+          .slice(0, MAX_SESSIONS);
+      } else if (this.sessions.length) {
+        await this._saveDatabaseNow();
+      }
+      this.remoteReady = true;
+      this.storageError = "";
+      if (this.remoteDirty) {
+        this.remoteDirty = false;
+        await this._saveDatabaseNow();
+      }
+    } catch (error) {
+      this.storageError = "连接战绩数据库失败：" + (error.message || "未知错误");
+    }
+  }
+
+  _saveDatabaseNow() {
+    if (!this.pool) return Promise.resolve();
+    const payload = JSON.stringify({ version: 1, sessions: this.sessions });
+    return this.pool.query(
+      "INSERT INTO nocturne_stats (id, payload, updated_at) VALUES (1, $1, now()) " +
+        "ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()",
+      [payload]
+    );
+  }
+
+  _queueDatabaseSave() {
+    if (!this.pool) return;
+    if (!this.remoteReady) {
+      this.remoteDirty = true;
+      return;
+    }
+    const payload = JSON.stringify({ version: 1, sessions: this.sessions });
+    this.remoteQueue = this.remoteQueue
+      .catch(() => {})
+      .then(() =>
+        this.pool.query(
+          "INSERT INTO nocturne_stats (id, payload, updated_at) VALUES (1, $1, now()) " +
+            "ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()",
+          [payload]
+        )
+      )
+      .then(() => {
+        this.storageError = "";
+      })
+      .catch((error) => {
+        this.storageError = "保存战绩数据库失败：" + (error.message || "未知错误");
+      });
   }
 
   _load() {
@@ -56,10 +155,12 @@ class StatsStore {
         "utf8"
       );
       fs.renameSync(tmp, this.file);
-      this.storageError = "";
+      if (!this.pool) this.storageError = "";
+      if (this.pool) this._queueDatabaseSave();
       return true;
     } catch (error) {
       this.storageError = "保存战绩失败：" + (error.message || "未知错误");
+      if (this.pool) this._queueDatabaseSave();
       return false;
     }
   }
@@ -215,8 +316,16 @@ class StatsStore {
       sessions: this.sessions.length,
       file: this.file,
       storageError: this.storageError,
-      persistence: "json",
+      persistence: this.pool ? "postgres" : "json",
+      remoteReady: this.remoteReady,
     };
+  }
+
+  async close() {
+    if (this.pool) {
+      await this.pool.end().catch(() => {});
+      this.pool = null;
+    }
   }
 }
 

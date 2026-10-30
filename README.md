@@ -4,8 +4,8 @@
 
 - **单人模式**：纯静态，双击 `index.html` 就能和电脑玩家对战；
 - **联机模式**：4 位房间号 / 邀请链接，真人同桌，空位由 AI 补足，支持断线重连、行动倒计时、隐藏底牌；
-- **零第三方依赖**：牌桌 UI、规则引擎、AI、联机服务全部使用原生 JavaScript / Node.js 实现，没有构建步骤；
-- **排行榜与历史战绩**：按昵称聚合联机战绩，支持局数、手数、胜场、总积分和最近牌局记录。
+- **零框架、无构建步骤**：牌桌 UI、规则引擎、AI、联机服务全部使用原生 JavaScript / Node.js 实现；只有可选的持久化战绩使用 `pg`；
+- **排行榜与历史战绩**：按昵称聚合联机战绩，支持局数、手数、胜场、总积分和最近牌局记录；线上使用 Render Postgres 持久化。
 
 ![桌面牌桌](docs/screenshot-table.png)
 
@@ -106,8 +106,10 @@ GET  /api/health   健康检查
 - 每场联机牌局结束时，按真人玩家记录：房间号、名次、买入、最终筹码、输赢、手数、是否夺冠；
 - 排行榜按总积分排序，总积分 = 最终筹码 − 起始筹码；
 - 历史战绩按昵称查询，最近 40 场；
-- 数据默认写入 `data/stats.json`，可用环境变量 `DATA_DIR` 改路径；
-- **Render 免费 Web Service 的本地文件系统是临时的**，实例休眠/重启/重新部署后战绩会清空。要长期保存，可以给 Render 实例挂载持久化磁盘并把 `DATA_DIR` 指向磁盘（通常需要付费实例），或后续接入 Postgres/Redis。
+- 配置 `DATABASE_URL` 时，战绩快照写入 Postgres 的 `nocturne_stats` 表，服务重启/休眠后仍然保留；
+- 未配置 `DATABASE_URL` 时，数据默认写入 `data/stats.json`，可用环境变量 `DATA_DIR` 改路径；
+- `render.yaml` 会自动创建一个 Render 免费 Postgres 并注入 `DATABASE_URL`；
+- **Render 免费 Postgres 30 天后到期**，到期前升级或迁移数据即可；Web Service 的本地文件系统仍是临时的，所以线上请使用 Postgres 或持久化磁盘。
 
 ---
 
@@ -115,7 +117,11 @@ GET  /api/health   健康检查
 
 ### 方案 A：Render（推荐，免费）
 
-> 免费实例的本地磁盘是临时的，排行榜会在休眠/重启后清空。见下方“排行榜持久化”。
+仓库里的 `render.yaml` 会同时创建：
+- 一个免费 Node Web Service；
+- 一个免费 Render Postgres，并自动注入 `DATABASE_URL`，让排行榜跨重启保留。
+
+> 免费 Postgres 30 天后到期。Web Service 的本地文件系统是临时的；长期使用请升级数据库或使用持久化磁盘。
 
 仓库里已经包含 `render.yaml`。
 
@@ -181,7 +187,7 @@ js/engine.js               无上限德州规则引擎（下注轮 / 边池 / �
 js/ai.js                   胜率模拟与电脑玩家策略
 js/app.js                  界面渲染、单机流程、联机 UI、SSE 客户端与战绩弹窗
 server.js                  零依赖 Node 联机房间服务（静态托管 + API + SSE）
-stats-store.js             JSON 排行榜/历史战绩存储（原子写入）
+stats-store.js             排行榜/历史战绩存储（JSON 或 Postgres 快照）
 tests/                     牌型、规则、AI、联机 API 与排行榜测试
 render.yaml                Render 一键部署配置
 Dockerfile                 容器部署
@@ -203,7 +209,8 @@ Dockerfile                 容器部署
 
 - 联机数据保存在内存中，服务重启或长时间无访问会丢失房间，没有排行榜和历史战绩。
 - 当前是单进程房间服务，不支持多实例/横向扩容；要做大规模公网服务，需要 Redis/Postgres 等共享状态和持久化。
-- Render 免费实例的本地文件系统是临时的，排行榜默认只在当前实例生命周期内保留。要长期保存，请挂载 Render 持久化磁盘并设置 `DATA_DIR`，或改用托管数据库。
+- Render 免费 Web Service 的本地文件系统是临时的；本项目线上使用 Render Postgres 保存战绩。免费 Postgres 30 天后到期，长期使用需要升级数据库或挂载持久化磁盘。
+- 排行榜按昵称合并，没有账号/密码体系，因此改名或重名会合并统计；适合朋友之间娱乐，不适合作为严肃竞技积分。
 - 没有接入真钱支付，也不适合真钱博彩。
 - 静态托管只能单人；联机必须运行 `server.js` 或使用 Render/Docker 等 Node 环境。
 

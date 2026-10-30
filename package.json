@@ -2,7 +2,7 @@
   "name": "nocturne-holdem",
   "version": "1.0.0",
   "private": true,
-  "description": "Nocturne Texas Hold'em: polished static solo mode plus a zero-dependency online room server with bots.",
+  "description": "Nocturne Texas Hold'em: static solo mode, online rooms with AI, and a persistent leaderboard.",
   "scripts": {
     "start": "node server.js",
     "serve": "python3 -m http.server 8000",
@@ -11,5 +11,8 @@
   "license": "MIT",
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
   }
 }

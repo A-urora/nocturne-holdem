@@ -25,7 +25,10 @@ const DONE_TTL_MS = 30 * 60 * 1000;
 const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, "data");
 
 const rooms = new Map();
-const statsStore = new StatsStore({ dataDir: DATA_DIR });
+const statsStore = new StatsStore({
+  dataDir: DATA_DIR,
+  databaseUrl: process.env.DATABASE_URL || "",
+});
 const HUMAN_COLORS = ["#d8b56a", "#78b9a4", "#a99bf0", "#e58e8a", "#7cb7dc", "#d8a06a"];
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -906,6 +909,7 @@ async function handleApi(req, res, url) {
       stats: {
         sessions: statsStore.status().sessions,
         storageError: statsStore.storageError,
+        persistence: statsStore.status().persistence,
       },
     });
     return;

@@ -1,11 +1,23 @@
+databases:
+  - name: nocturne-stats
+    plan: free
+    region: singapore
+    databaseName: nocturne_stats
+    user: nocturne_stats_user
+
 services:
   - type: web
     name: nocturne-holdem
     runtime: node
     plan: free
-    buildCommand: "npm install --omit=dev"
+    region: singapore
+    buildCommand: "npm install"
     startCommand: "node server.js"
     healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
         value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: nocturne-stats
+          property: connectionString
