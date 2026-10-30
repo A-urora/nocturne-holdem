@@ -22,6 +22,22 @@
     6: ["pos-bottom", "pos-bottom-left", "pos-left", "pos-top", "pos-right", "pos-bottom-right"],
   };
   const SPEEDS = [1, 2, 4];
+  const QUICK_PHRASES = [
+    { id: "praise_good", text: "你啲牌打得真係好喎", tone: "praise" },
+    { id: "praise_god", text: "牌神附體，真係惹唔起", tone: "praise" },
+    { id: "humble_lucky", text: "運氣好啫，承讓承讓", tone: "humble" },
+    { id: "humble_steady", text: "都係你打得穩陣", tone: "humble" },
+    { id: "tease_deep", text: "你啲牌收得咁深嘅", tone: "tease" },
+    { id: "tease_seen", text: "畀你睇穿咗添", tone: "tease" },
+    { id: "hurry_flower", text: "快啲啦，等到花兒都謝喇", tone: "hurry" },
+    { id: "hurry_slow", text: "慢慢諗，我唔急", tone: "hurry" },
+    { id: "feel_numb", text: "呢手牌打到我一額汗", tone: "feel" },
+    { id: "feel_breath", text: "畀我唞吓先", tone: "feel" },
+    { id: "feel_luck", text: "呢啲運氣真係冇得頂", tone: "feel" },
+    { id: "invite_again", text: "再嚟一局？", tone: "invite" },
+  ];
+  const CHAT_VOICE_BASE = "audio/chat/";
+  const chatVoices = new Map();
   const PHASE_NAMES = {
     idle: "等待开局",
     preflop: "翻牌前",
@@ -64,6 +80,9 @@
       serverOffset: 0,
       errorCount: 0,
       lastLogId: 0,
+      lastChatId: 0,
+      chatReady: false,
+      chatSending: false,
       pollTimer: null,
       polling: false,
     },
@@ -200,6 +219,10 @@
     onlinePill: $("#onlinePill"),
     onlinePillDot: $("#onlinePillDot"),
     onlinePillStatus: $("#onlinePillStatus"),
+    quickChatBtn: $("#quickChatBtn"),
+    quickChatPanel: $("#quickChatPanel"),
+    quickChatClose: $("#quickChatClose"),
+    quickChatGrid: $("#quickChatGrid"),
     onlineRoomCode: $("#onlineRoomCode"),
     copyInvitePillBtn: $("#copyInvitePillBtn"),
     leaveOnlinePillBtn: $("#leaveOnlinePillBtn"),
@@ -616,6 +639,10 @@
         tone(920, 0.055, 0.022, "square");
         tone(920, 0.06, 0.022, "square", 0.13);
       },
+      chat() {
+        tone(760, 0.06, 0.015, "sine");
+        tone(1010, 0.075, 0.011, "sine", 0.06);
+      },
       error() {
         tone(170, 0.12, 0.018, "sawtooth");
         tone(135, 0.18, 0.016, "sawtooth", 0.06);
@@ -815,11 +842,218 @@
     el.joinRoomBtn.textContent = busy ? "加入中…" : "加入房间";
   }
 
+  let activeChatVoice = null;
+
+  function preloadChatVoices() {
+    if (!state.settings.sound || typeof Audio === "undefined") return;
+    for (const phrase of QUICK_PHRASES) {
+      if (chatVoices.has(phrase.id)) continue;
+      const audio = new Audio(CHAT_VOICE_BASE + phrase.id + ".m4a");
+      audio.preload = "auto";
+      audio.addEventListener("ended", () => {
+        if (activeChatVoice === audio) activeChatVoice = null;
+      });
+      chatVoices.set(phrase.id, audio);
+    }
+  }
+
+  function stopChatVoice() {
+    if (!activeChatVoice) return;
+    try {
+      activeChatVoice.pause();
+      activeChatVoice.currentTime = 0;
+    } catch (error) {
+      /* ignore */
+    }
+    activeChatVoice = null;
+  }
+
+  function fallbackChatVoice(phrase) {
+    if (!phrase || !window.speechSynthesis || !window.SpeechSynthesisUtterance) {
+      sound.chat();
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(phrase.text);
+    utterance.lang = "zh-HK";
+    utterance.rate = 0.95;
+    const voices = window.speechSynthesis.getVoices();
+    const cantonese = voices.find((voice) => /^(zh[-_]HK|yue)/i.test(voice.lang));
+    if (cantonese) utterance.voice = cantonese;
+    try {
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+    } catch (error) {
+      sound.chat();
+    }
+  }
+
+  function playChatVoice(phraseId) {
+    if (!state.settings.sound) return false;
+    const phrase = QUICK_PHRASES.find((item) => item.id === phraseId);
+    if (!phrase || typeof Audio === "undefined") {
+      sound.chat();
+      return false;
+    }
+    let audio = chatVoices.get(phrase.id);
+    if (!audio) {
+      audio = new Audio(CHAT_VOICE_BASE + phrase.id + ".m4a");
+      audio.preload = "auto";
+      chatVoices.set(phrase.id, audio);
+    }
+    stopChatVoice();
+    activeChatVoice = audio;
+    try {
+      audio.currentTime = 0;
+      const promise = audio.play();
+      if (promise && typeof promise.catch === "function") {
+        promise.catch((error) => {
+          if (activeChatVoice !== audio || (error && error.name === "AbortError")) return;
+          activeChatVoice = null;
+          fallbackChatVoice(phrase);
+        });
+      }
+      return true;
+    } catch (error) {
+      activeChatVoice = null;
+      fallbackChatVoice(phrase);
+      return false;
+    }
+  }
+
+  function renderQuickChat() {
+    if (!el.quickChatGrid) return;
+    el.quickChatGrid.innerHTML = QUICK_PHRASES.map(
+      (phrase) =>
+        '<button type="button" data-phrase-id="' +
+        escapeHtml(phrase.id) +
+        '" data-tone="' +
+        escapeHtml(phrase.tone) +
+        '">' +
+        escapeHtml(phrase.text) +
+        "</button>"
+    ).join("");
+  }
+
+  function openQuickChat() {
+    if (state.mode !== "online" || !state.online.token) return;
+    preloadChatVoices();
+    renderQuickChat();
+    el.quickChatPanel.hidden = false;
+    el.quickChatBtn.setAttribute("aria-expanded", "true");
+    const first = el.quickChatGrid.querySelector("button");
+    if (first) setTimeout(() => first.focus(), 40);
+    sound.click();
+  }
+
+  function closeQuickChat() {
+    if (!el.quickChatPanel || el.quickChatPanel.hidden) {
+      if (el.quickChatBtn) el.quickChatBtn.setAttribute("aria-expanded", "false");
+      return;
+    }
+    const hadFocus = el.quickChatPanel.contains(document.activeElement);
+    el.quickChatPanel.hidden = true;
+    el.quickChatBtn.setAttribute("aria-expanded", "false");
+    if (hadFocus) el.quickChatBtn.focus();
+  }
+
+  function toggleQuickChat() {
+    if (el.quickChatPanel.hidden) openQuickChat();
+    else closeQuickChat();
+  }
+
+  async function sendQuickChat(phraseId) {
+    if (state.online.chatSending || state.mode !== "online" || !state.online.token) return;
+    state.online.chatSending = true;
+    try {
+      const result = await onlineApi("chat", {
+        room: state.online.code,
+        token: state.online.token,
+        phraseId,
+      });
+      if (result.message) handleChat(result.message);
+      closeQuickChat();
+    } catch (error) {
+      sound.error();
+      toast(error.message || "快捷语没有发出去", { duration: 2400 });
+    } finally {
+      state.online.chatSending = false;
+    }
+  }
+
+  function chatBubbleSide(seat) {
+    if (seat.classList.contains("pos-bottom-left")) return "right";
+    if (seat.classList.contains("pos-bottom") || seat.classList.contains("pos-bottom-right")) {
+      return "left";
+    }
+    if (seat.classList.contains("pos-left") || seat.classList.contains("pos-right")) {
+      return "below";
+    }
+    if (
+      seat.classList.contains("pos-top-right") ||
+      seat.classList.contains("pos-right-top")
+    ) {
+      return "left";
+    }
+    return "right";
+  }
+
+  function showChatBubble(message) {
+    const seats = Array.from(document.querySelectorAll(".seat"));
+    const seat = seats.find((node) => node.dataset.playerId === message.playerId);
+    const dock = document.getElementById("actionDock");
+    const mobile = window.matchMedia("(max-width: 700px)").matches;
+    if (!seat && !mobile) {
+      toast((message.name || "牌友") + "：" + message.text, { duration: 2600 });
+      return;
+    }
+    document.querySelectorAll(".seat-chat-bubble").forEach((node) => node.remove());
+    const bubble = document.createElement("div");
+    bubble.className = "seat-chat-bubble";
+    if (mobile && dock) {
+      bubble.classList.add("is-floating");
+      bubble.textContent = (message.name || "牌友") + "：" + message.text;
+      dock.appendChild(bubble);
+    } else if (seat) {
+      bubble.classList.add("chat-" + chatBubbleSide(seat));
+      bubble.textContent = message.text;
+      seat.appendChild(bubble);
+    } else {
+      return;
+    }
+    setTimeout(() => {
+      bubble.classList.add("is-out");
+      setTimeout(() => bubble.remove(), 220);
+    }, 3400);
+  }
+
+  function handleChat(message) {
+    if (!message || !Number.isFinite(Number(message.id)) || !message.text) return;
+    const id = Number(message.id);
+    if (id <= state.online.lastChatId) return;
+    state.online.lastChatId = id;
+    showChatBubble(message);
+    playChatVoice(message.phraseId);
+  }
+
+  function syncOnlineChat(messages) {
+    if (!Array.isArray(messages)) return;
+    const maxId = messages.reduce((max, message) => Math.max(max, Number(message.id) || 0), 0);
+    if (!state.online.chatReady) {
+      state.online.chatReady = true;
+      state.online.lastChatId = Math.max(state.online.lastChatId, maxId);
+      return;
+    }
+    for (const message of messages) handleChat(message);
+  }
+
   function updateOnlinePill() {
     const online = state.mode === "online" && state.online.code;
     const visible = online && (state.online.status === "playing" || state.online.status === "done");
     el.onlinePill.hidden = !visible;
-    if (!visible) return;
+    if (!visible) {
+      closeQuickChat();
+      return;
+    }
     el.onlineRoomCode.textContent = state.online.code;
     const connected = state.online.connected;
     el.onlinePillStatus.textContent = connected ? "已连接" : "重连中…";
@@ -859,6 +1093,10 @@
     state.online.errorCount = 0;
     state.online.lastStateAt = 0;
     state.online.lastLogId = 0;
+    state.online.lastChatId = 0;
+    state.online.chatReady = false;
+    state.online.chatSending = false;
+    preloadChatVoices();
     state.mode = "online";
     state.setupMode = "online";
     state.game = null;
@@ -945,7 +1183,8 @@
         next.seq !== previous.seq ||
         next.status !== previous.status ||
         next.turnDeadline !== previous.turnDeadline ||
-        JSON.stringify(next.lobby || null) !== JSON.stringify(previous.lobby || null);
+        JSON.stringify(next.lobby || null) !== JSON.stringify(previous.lobby || null) ||
+        JSON.stringify(next.chat || []) !== JSON.stringify(previous.chat || []);
       state.online.connected = true;
       if (changed) {
         handleOnlineView(next);
@@ -988,6 +1227,16 @@
       state.online.connected = true;
       state.online.errorCount = 0;
       handleOnlineView(view);
+    });
+    es.addEventListener("chat", (event) => {
+      if (state.online.eventSource !== es) return;
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch (error) {
+        return;
+      }
+      handleChat(message);
     });
     es.onopen = () => {
       if (state.online.eventSource !== es) return;
@@ -1121,6 +1370,8 @@
     state.setupMode = "online";
     state.setupOpen = false;
     state.setupShown = false;
+    state.online.playerId = (view.you && view.you.id) || state.online.playerId;
+    syncOnlineChat(view.chat);
     el.app.classList.add("is-online");
     el.setup.hidden = true;
     el.setup.classList.remove("is-leaving");
@@ -1130,6 +1381,7 @@
       state.hero = null;
       el.lobbyOverlay.hidden = false;
       el.onlinePill.hidden = true;
+      closeQuickChat();
       renderLobby(view);
       return;
     }
@@ -1304,6 +1556,9 @@
       serverOffset: 0,
       errorCount: 0,
       lastLogId: 0,
+      lastChatId: 0,
+      chatReady: false,
+      chatSending: false,
       pollTimer: null,
       polling: false,
     };
@@ -1360,6 +1615,9 @@
       serverOffset: 0,
       errorCount: 0,
       lastLogId: 0,
+      lastChatId: 0,
+      chatReady: false,
+      chatSending: false,
       pollTimer: null,
       polling: false,
     };
@@ -1608,6 +1866,21 @@
 
     el.copyInviteLobbyBtn.addEventListener("click", () => copyInvite());
     el.copyInvitePillBtn.addEventListener("click", () => copyInvite());
+    el.quickChatBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleQuickChat();
+    });
+    el.quickChatClose.addEventListener("click", () => closeQuickChat());
+    el.quickChatGrid.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-phrase-id]");
+      if (!button) return;
+      sendQuickChat(button.dataset.phraseId);
+    });
+    document.addEventListener("click", (event) => {
+      if (el.quickChatPanel.hidden) return;
+      if (event.target.closest("#quickChatPanel") || event.target.closest("#quickChatBtn")) return;
+      closeQuickChat();
+    });
     el.leaveLobbyBtn.addEventListener("click", () => confirmLeaveOnline());
     el.leaveOnlinePillBtn.addEventListener("click", () => confirmLeaveOnline());
     el.startOnlineBtn.addEventListener("click", async () => {
@@ -1627,6 +1900,9 @@
   }
 
   function showSetup() {
+    closeQuickChat();
+    stopChatVoice();
+    document.querySelectorAll(".seat-chat-bubble").forEach((node) => node.remove());
     clearTimer();
     state.beginning = false;
     state.paused = true;
@@ -1662,6 +1938,7 @@
 
   function beginGame() {
     if (state.mode === "online") return;
+    closeQuickChat();
     if (state.beginning || !state.setupShown) return;
     state.beginning = true;
     clearTimer();
@@ -2646,6 +2923,9 @@
       if (state.settings.sound) {
         sound.unlock();
         sound.click();
+        if (state.mode === "online") preloadChatVoices();
+      } else {
+        stopChatVoice();
       }
     });
 
@@ -2658,6 +2938,11 @@
     });
 
     document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && el.quickChatPanel && !el.quickChatPanel.hidden) {
+        event.preventDefault();
+        closeQuickChat();
+        return;
+      }
       if (state.setupOpen || !state.game || state.paused) return;
       if (el.modalRoot.childElementCount) return;
       const tag = (event.target && event.target.tagName) || "";
@@ -2685,6 +2970,7 @@
   /* ---------------------------------------------------------- modals */
 
   function openModal(options) {
+    closeQuickChat();
     const shouldPause = options.pause !== false && state.game && !state.paused;
     if (shouldPause) {
       pauseGame();

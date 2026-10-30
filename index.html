@@ -459,8 +459,20 @@
     <span class="online-pill-dot" id="onlinePillDot"></span>
     <span class="online-pill-copy">房间 <b id="onlineRoomCode">----</b></span>
     <span class="online-pill-status" id="onlinePillStatus">已连接</span>
+    <button type="button" id="quickChatBtn" title="粤语快捷语" aria-label="粤语快捷语" aria-expanded="false" aria-controls="quickChatPanel">
+      <svg class="pill-chat-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v10H9l-4 3.5V5.5z"/><path d="M8 9h8M8 12h5"/></svg>
+    </button>
     <button type="button" id="copyInvitePillBtn" title="复制邀请链接" aria-label="复制邀请链接">⧉</button>
     <button type="button" id="leaveOnlinePillBtn" title="离开房间" aria-label="离开房间">×</button>
+  </div>
+
+  <div class="quick-chat-panel" id="quickChatPanel" hidden>
+    <div class="quick-chat-head">
+      <span>粤语快捷语 <i class="quick-chat-lang">有配音</i></span>
+      <button type="button" id="quickChatClose" aria-label="关闭快捷语">×</button>
+    </div>
+    <div class="quick-chat-grid" id="quickChatGrid"></div>
+    <p class="quick-chat-hint">点击即发送 · 同桌会听到粤语配音 · 1.5 秒冷却</p>
   </div>
 
   <div class="modal-root" id="modalRoot" aria-live="polite"></div>

@@ -14,6 +14,23 @@ const PORT = Number(process.env.PORT) || 8787;
 const HOST = process.env.HOST || "0.0.0.0";
 const MAX_BODY = 64 * 1024;
 const MAX_HUMANS = 6;
+
+const QUICK_PHRASES = [
+  { id: "praise_good", text: "你啲牌打得真係好喎", tone: "praise" },
+  { id: "praise_god", text: "牌神附體，真係惹唔起", tone: "praise" },
+  { id: "humble_lucky", text: "運氣好啫，承讓承讓", tone: "humble" },
+  { id: "humble_steady", text: "都係你打得穩陣", tone: "humble" },
+  { id: "tease_deep", text: "你啲牌收得咁深嘅", tone: "tease" },
+  { id: "tease_seen", text: "畀你睇穿咗添", tone: "tease" },
+  { id: "hurry_flower", text: "快啲啦，等到花兒都謝喇", tone: "hurry" },
+  { id: "hurry_slow", text: "慢慢諗，我唔急", tone: "hurry" },
+  { id: "feel_numb", text: "呢手牌打到我一額汗", tone: "feel" },
+  { id: "feel_breath", text: "畀我唞吓先", tone: "feel" },
+  { id: "feel_luck", text: "呢啲運氣真係冇得頂", tone: "feel" },
+  { id: "invite_again", text: "再嚟一局？", tone: "invite" },
+];
+const QUICK_PHRASE_MAP = new Map(QUICK_PHRASES.map((phrase) => [phrase.id, phrase]));
+const CHAT_COOLDOWN_MS = 1500;
 const TURN_MS = 45000;
 const TURN_DISCONNECTED_MS = 15000;
 const NEXT_HAND_MS = 9000;
@@ -44,6 +61,8 @@ const MIME = {
   ".webp": "image/webp",
   ".ico": "image/x-icon",
   ".txt": "text/plain; charset=utf-8",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
 };
 
 /* ------------------------------------------------------------------ utils */
@@ -296,6 +315,7 @@ function buildGameView(room, viewerId) {
     difficulty: room.difficulty,
     botFill: room.botFill,
     lobby: null,
+    chat: room.chat.slice(-20),
     game: {
       room: room.code,
       status: room.status === "done" ? "done" : "playing",
@@ -341,6 +361,7 @@ function buildView(room, humanId) {
       botFill: room.botFill,
       lobby: buildLobby(room),
       game: null,
+      chat: room.chat.slice(-20),
       legal: null,
       turnDeadline: 0,
       serverTime: Date.now(),
@@ -365,6 +386,27 @@ function broadcast(room) {
       const view = buildView(room, client.humanId);
       if (!view) continue;
       client.res.write("event: state\ndata: " + JSON.stringify(view) + "\n\n");
+    } catch (error) {
+      room.clients.delete(client);
+      try {
+        client.res.end();
+      } catch (closeError) {
+        /* ignore */
+      }
+    }
+  }
+}
+
+function broadcastChat(room, message) {
+  if (!room.clients.size) return;
+  const payload = JSON.stringify(message);
+  for (const client of [...room.clients]) {
+    if (!client || client.res.writableEnded) {
+      room.clients.delete(client);
+      continue;
+    }
+    try {
+      client.res.write("event: chat\ndata: " + payload + "\n\n");
     } catch (error) {
       room.clients.delete(client);
       try {
@@ -643,6 +685,7 @@ function createHuman(room, name, isHost) {
     isHost: Boolean(isHost),
     connected: false,
     left: false,
+    lastChatAt: 0,
     joinedAt: Date.now(),
   };
 }
@@ -678,6 +721,8 @@ function createRoom(options) {
     turnPlayerId: null,
     paused: false,
     clients: new Set(),
+    chat: [],
+    chatSeq: 0,
   };
   const human = createHuman(room, name, true);
   room.humans.push(human);
@@ -1055,6 +1100,43 @@ async function handleApi(req, res, url) {
       return;
     }
 
+    if (pathname === "/api/chat") {
+      const room = findRoom(body.room);
+      const human = room ? findHuman(room, body.token) : null;
+      if (!room || !human) {
+        sendJson(res, 401, { error: "房间不存在或登录已失效。" });
+        return;
+      }
+      const phrase = QUICK_PHRASE_MAP.get(String(body.phraseId || ""));
+      if (!phrase) {
+        sendJson(res, 400, { error: "这句快捷语不存在。" });
+        return;
+      }
+      const now = Date.now();
+      if (now - (human.lastChatAt || 0) < CHAT_COOLDOWN_MS) {
+        sendJson(res, 429, { error: "说太快了，缓一下。" });
+        return;
+      }
+      human.lastChatAt = now;
+      room.chatSeq += 1;
+      const message = {
+        id: room.chatSeq,
+        playerId: human.id,
+        name: human.name,
+        avatar: human.avatar,
+        phraseId: phrase.id,
+        text: phrase.text,
+        tone: phrase.tone,
+        at: now,
+      };
+      room.chat.push(message);
+      if (room.chat.length > 30) room.chat.splice(0, room.chat.length - 30);
+      room.updatedAt = now;
+      broadcastChat(room, message);
+      sendJson(res, 200, { ok: true, message });
+      return;
+    }
+
     if (pathname === "/api/act") {
       const room = findRoom(body.room);
       const human = room ? findHuman(room, body.token) : null;
@@ -1137,19 +1219,48 @@ function serveStatic(req, res, url) {
     }
     const extension = path.extname(absolute).toLowerCase();
     const contentType = MIME[extension] || "application/octet-stream";
+    const cacheControl =
+      extension === ".m4a" ? "public, max-age=31536000, immutable" : "no-cache";
+    let start = 0;
+    let end = stat.size - 1;
+    let status = 200;
+    const rangeHeader = req.headers.range;
+    if (rangeHeader && stat.size > 0) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(String(rangeHeader).trim());
+      if (match && (match[1] || match[2])) {
+        if (!match[1]) {
+          const suffix = Number(match[2]);
+          start = Math.max(0, stat.size - suffix);
+        } else {
+          start = Number(match[1]);
+          if (match[2]) end = Math.min(Number(match[2]), stat.size - 1);
+        }
+        if (start >= stat.size || start > end) {
+          res.writeHead(416, {
+            "Content-Range": "bytes */" + stat.size,
+            "Accept-Ranges": "bytes",
+          });
+          res.end();
+          return;
+        }
+        status = 206;
+      }
+    }
     const headers = {
       "Content-Type": contentType,
-      "Content-Length": stat.size,
-      "Cache-Control": extension === ".html" ? "no-cache" : "no-cache",
+      "Content-Length": end - start + 1,
+      "Cache-Control": cacheControl,
+      "Accept-Ranges": "bytes",
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "same-origin",
     };
-    res.writeHead(200, headers);
+    if (status === 206) headers["Content-Range"] = "bytes " + start + "-" + end + "/" + stat.size;
+    res.writeHead(status, headers);
     if (req.method === "HEAD") {
       res.end();
       return;
     }
-    const stream = fs.createReadStream(absolute);
+    const stream = fs.createReadStream(absolute, status === 206 ? { start, end } : undefined);
     stream.on("error", () => {
       if (!res.headersSent) res.writeHead(500);
       res.end();

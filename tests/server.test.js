@@ -206,3 +206,83 @@ test("short deck rooms expose the variant and 36-card private hands", async () =
     }
   });
 });
+
+test("quick chat is whitelisted, rate-limited, and shared with the room", async () => {
+  await withServer(async (base) => {
+    const created = await post(base, "/api/create", {
+      name: "粤语房主",
+      botFill: true,
+      difficulty: "standard",
+      startingChips: 5000,
+    });
+    const joined = await post(base, "/api/join", {
+      room: created.data.room,
+      name: "粤语朋友",
+    });
+
+    const first = await post(base, "/api/chat", {
+      room: created.data.room,
+      token: created.data.token,
+      phraseId: "praise_good",
+    });
+    assert.equal(first.response.status, 200);
+    assert.equal(first.data.message.phraseId, "praise_good");
+    assert.equal(first.data.message.text, "你啲牌打得真係好喎");
+    assert.equal(first.data.message.id, 1);
+
+    const second = await post(base, "/api/chat", {
+      room: created.data.room,
+      token: joined.data.token,
+      phraseId: "invite_again",
+    });
+    assert.equal(second.response.status, 200);
+    assert.equal(second.data.message.id, 2);
+
+    const state = await fetch(
+      base + "/api/state?room=" + created.data.room + "&token=" + created.data.token
+    ).then((response) => response.json());
+    assert.equal(state.view.chat.length, 2);
+    assert.equal(state.view.chat[0].text, "你啲牌打得真係好喎");
+    assert.equal(state.view.chat[1].text, "再嚟一局？");
+
+    const tooFast = await post(base, "/api/chat", {
+      room: created.data.room,
+      token: created.data.token,
+      phraseId: "praise_god",
+    });
+    assert.equal(tooFast.response.status, 429);
+
+    const unknown = await post(base, "/api/chat", {
+      room: created.data.room,
+      token: created.data.token,
+      phraseId: "free_text",
+    });
+    assert.equal(unknown.response.status, 400);
+  });
+});
+
+test("Cantonese quick chat audio is served with range support", async () => {
+  await withServer(async (base) => {
+    const full = await fetch(base + "/audio/chat/praise_good.m4a");
+    assert.equal(full.status, 200);
+    assert.equal(full.headers.get("content-type"), "audio/mp4");
+    assert.equal(full.headers.get("accept-ranges"), "bytes");
+    const fullSize = Number(full.headers.get("content-length"));
+    assert.ok(fullSize > 1000);
+    await full.arrayBuffer();
+
+    const partial = await fetch(base + "/audio/chat/praise_good.m4a", {
+      headers: { Range: "bytes=0-99" },
+    });
+    assert.equal(partial.status, 206);
+    assert.match(partial.headers.get("content-range"), /^bytes 0-99\/\d+$/);
+    assert.equal((await partial.arrayBuffer()).byteLength, 100);
+
+    const openEnded = await fetch(base + "/audio/chat/praise_good.m4a", {
+      headers: { Range: "bytes=0-999999" },
+    });
+    assert.equal(openEnded.status, 206);
+    assert.equal(openEnded.headers.get("content-range"), "bytes 0-" + (fullSize - 1) + "/" + fullSize);
+    assert.equal((await openEnded.arrayBuffer()).byteLength, fullSize);
+  });
+});
