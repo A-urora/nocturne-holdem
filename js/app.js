@@ -37,6 +37,7 @@
     { id: "invite_again", text: "再嚟一局？", tone: "invite" },
   ];
   const CHAT_VOICE_BASE = "audio/chat/";
+  const CHAT_VOICE_VOLUME = 0.6;
   const chatVoices = new Map();
   const PHASE_NAMES = {
     idle: "等待开局",
@@ -850,6 +851,7 @@
       if (chatVoices.has(phrase.id)) continue;
       const audio = new Audio(CHAT_VOICE_BASE + phrase.id + ".m4a");
       audio.preload = "auto";
+      audio.volume = CHAT_VOICE_VOLUME;
       audio.addEventListener("ended", () => {
         if (activeChatVoice === audio) activeChatVoice = null;
       });
@@ -876,6 +878,7 @@
     const utterance = new SpeechSynthesisUtterance(phrase.text);
     utterance.lang = "zh-HK";
     utterance.rate = 0.95;
+    utterance.volume = 0.75;
     const voices = window.speechSynthesis.getVoices();
     const cantonese = voices.find((voice) => /^(zh[-_]HK|yue)/i.test(voice.lang));
     if (cantonese) utterance.voice = cantonese;
@@ -898,6 +901,7 @@
     if (!audio) {
       audio = new Audio(CHAT_VOICE_BASE + phrase.id + ".m4a");
       audio.preload = "auto";
+      audio.volume = CHAT_VOICE_VOLUME;
       chatVoices.set(phrase.id, audio);
     }
     stopChatVoice();
