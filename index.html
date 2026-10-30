@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#07110e">
+  <meta name="description" content="NOCTURNE 德州扑克 — 单人静态牌桌，也可创建联机房间，和朋友与电脑玩家同桌。">
+  <title>NOCTURNE · 德州扑克</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+
+  <div class="app" id="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <span>N</span>
+        </span>
+        <span class="brand-text">
+          <strong>NOCTURNE</strong>
+          <small>德州扑克 · PRIVATE TABLE</small>
+        </span>
+      </div>
+
+      <div class="topbar-readout" id="topbarReadout">
+        <div class="readout-item">
+          <span>牌局</span>
+          <b id="topHandNo">—</b>
+        </div>
+        <i class="readout-divider" aria-hidden="true"></i>
+        <div class="readout-item">
+          <span>盲注</span>
+          <b id="topBlinds">25 / 50</b>
+        </div>
+        <i class="readout-divider" aria-hidden="true"></i>
+        <div class="readout-item readout-level">
+          <span>盲注升级</span>
+          <b id="topLevel">8 手后</b>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <button class="icon-btn speed-btn" id="speedBtn" type="button" title="切换电脑思考速度" aria-label="切换电脑思考速度">
+          <span id="speedLabel">1×</span>
+        </button>
+        <button class="icon-btn" id="soundBtn" type="button" title="声音开关" aria-label="声音开关">
+          <svg class="icon icon-volume" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path class="sound-wave" d="M16 8.5a5 5 0 0 1 0 7"/><path class="sound-wave" d="M18.8 6a8.5 8.5 0 0 1 0 12"/><path class="sound-mute" d="m16.5 9 5 6m0-6-5 6"/></svg>
+        </button>
+        <button class="icon-btn" id="rulesBtn" type="button" title="玩法与牌型" aria-label="玩法与牌型">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.7 9a2.4 2.4 0 1 1 3.4 2.2c-.8.4-1.1 1-1.1 1.8v.2"/><path d="M12 17h.01"/></svg>
+        </button>
+        <button class="icon-btn" id="logBtn" type="button" title="牌局与战绩" aria-label="牌局与战绩">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h9"/></svg>
+        </button>
+        <button class="text-btn" id="newGameBtn" type="button" title="新牌局" aria-label="新牌局">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
+          <span>新牌局</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="game-shell">
+      <section class="table-stage" id="tableStage" aria-label="德州扑克牌桌">
+        <div class="table-oval">
+          <div class="table-rim">
+            <div class="felt">
+              <div class="felt-arc felt-arc-one" aria-hidden="true"></div>
+              <div class="felt-arc felt-arc-two" aria-hidden="true"></div>
+              <div class="felt-watermark" aria-hidden="true">
+                <span class="watermark-n">N</span>
+                <span class="watermark-word">NOCTURNE</span>
+              </div>
+
+              <div class="table-center">
+                <div class="phase-chip" id="phaseLabel">等待开局</div>
+                <div class="community" id="community" aria-live="polite"></div>
+                <div class="pot-line">
+                  <span class="pot-label"><i class="mini-chip" aria-hidden="true"></i>底池</span>
+                  <b id="potValue">0</b>
+                  <span class="pot-sub" id="potSub"></span>
+                </div>
+                <div class="table-note" id="tableNote">等待玩家入座</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="seats" id="seats"></div>
+
+        <div class="table-empty" id="tableEmpty">
+          <div class="empty-cards" aria-hidden="true">
+            <span class="empty-card">A<span>♠</span></span>
+            <span class="empty-card red">K<span>♥</span></span>
+          </div>
+          <p>牌桌已备好</p>
+          <span>入座后自动发牌</span>
+        </div>
+
+        <div class="street-banner" id="streetBanner" aria-live="polite"></div>
+      </section>
+
+      <aside class="sidebar">
+        <section class="side-card side-overview">
+          <div class="side-heading">
+            <span>牌局信息</span>
+            <span class="live-pill"><i></i>LIVE</span>
+          </div>
+          <div class="overview-hero">
+            <div class="overview-avatar" id="sideHeroAvatar">你</div>
+            <div>
+              <span class="eyebrow">你的筹码</span>
+              <strong id="sideHeroChips">—</strong>
+            </div>
+            <span class="profit-pill" id="sideProfit">±0</span>
+          </div>
+          <div class="info-grid">
+            <div><span>盲注</span><b id="sideBlinds">25 / 50</b></div>
+            <div><span>下一级</span><b id="sideLevel">8 手后</b></div>
+            <div><span>在座</span><b id="sidePlayers">—</b></div>
+            <div><span>底池</span><b id="sidePot">0</b></div>
+          </div>
+          <div class="level-track">
+            <div class="level-track-top">
+              <span>盲注进度</span>
+              <span id="levelTrackLabel">第 1 级</span>
+            </div>
+            <div class="level-bar"><i id="levelBarFill"></i></div>
+          </div>
+        </section>
+
+        <section class="side-card side-log-card">
+          <div class="side-heading">
+            <span>行动记录</span>
+            <button class="link-btn" id="logExpandBtn" type="button">全部</button>
+          </div>
+          <div class="side-log" id="sideLog" aria-live="polite">
+            <div class="log-empty">牌局开始后，这里会记录每一次行动。</div>
+          </div>
+        </section>
+
+        <section class="side-card side-coach" id="coachCard">
+          <div class="coach-icon" aria-hidden="true">♠</div>
+          <div>
+            <span class="eyebrow">牌桌提示</span>
+            <p id="coachText">位置比牌力更值钱。晚位可以玩得更宽。</p>
+          </div>
+        </section>
+      </aside>
+    </main>
+
+    <section class="action-dock" id="actionDock" aria-label="行动区">
+      <div class="dock-idle" id="dockIdle">
+        <div class="idle-mark" aria-hidden="true"><span>♠</span></div>
+        <div class="idle-copy">
+          <span class="eyebrow">等待入座</span>
+          <strong>准备好后开始你的第一手牌</strong>
+        </div>
+      </div>
+
+      <div class="dock-play" id="dockPlay" hidden>
+        <div class="dock-topline">
+          <div class="hero-readout">
+            <div class="hero-mini-cards" id="heroMiniCards" aria-hidden="true"></div>
+            <div class="hero-readout-copy">
+              <span class="eyebrow">你的手牌</span>
+              <strong id="heroHandHint">—</strong>
+            </div>
+          </div>
+          <div class="turn-status" id="turnStatus" aria-live="polite">
+            <i class="status-dot" aria-hidden="true"></i>
+            <span>等待发牌</span>
+            <b class="turn-clock" id="turnClock" hidden></b>
+          </div>
+          <div class="odds-readout" id="oddsReadout"></div>
+        </div>
+
+        <div class="raise-panel" id="raisePanel" hidden>
+          <div class="raise-main">
+            <div class="raise-caption">
+              <span id="raiseCaption">加注到</span>
+              <strong id="raiseValueLabel">100</strong>
+            </div>
+            <input type="range" id="raiseRange" min="100" max="1000" step="1" value="100" aria-label="加注金额">
+            <div class="range-extents"><span id="rangeMinLabel">100</span><span id="rangeMaxLabel">1,000</span></div>
+          </div>
+          <div class="raise-presets" role="group" aria-label="快捷下注">
+            <button type="button" data-preset="min">最小</button>
+            <button type="button" data-preset="half">½ 池</button>
+            <button type="button" data-preset="pot">满池</button>
+            <button type="button" data-preset="allin">全下</button>
+          </div>
+        </div>
+
+        <div class="action-row" id="actionRow">
+          <button class="game-btn btn-fold" id="foldBtn" type="button">
+            <span>弃牌</span>
+            <kbd>F</kbd>
+          </button>
+          <button class="game-btn btn-call" id="callBtn" type="button">
+            <span id="callBtnText">过牌</span>
+            <kbd>C</kbd>
+          </button>
+          <button class="game-btn btn-raise" id="raiseBtn" type="button">
+            <span id="raiseBtnText">加注</span>
+            <span class="raise-amount" id="raiseBtnAmount"></span>
+            <kbd>R</kbd>
+          </button>
+        </div>
+      </div>
+
+      <div class="dock-waiting" id="dockWaiting" hidden>
+        <div class="waiting-avatar" id="waitingAvatar" aria-hidden="true"></div>
+        <div class="waiting-copy">
+          <span class="eyebrow">等待行动</span>
+          <strong id="waitingText">等待对手行动…</strong>
+        </div>
+        <div class="thinking-dots" aria-hidden="true"><i></i><i></i><i></i></div>
+      </div>
+
+      <div class="dock-result" id="dockResult" hidden>
+        <div class="result-crown" id="resultCrown" aria-hidden="true">♠</div>
+        <div class="result-copy">
+          <span class="eyebrow" id="resultEyebrow">本手结束</span>
+          <strong id="resultTitle">你赢得底池</strong>
+          <p id="resultDetail"></p>
+        </div>
+        <div class="result-actions">
+          <span class="next-countdown" id="nextCountdown"></span>
+          <button class="game-btn btn-raise result-next" id="nextHandBtn" type="button">
+            <span>下一手</span>
+            <span aria-hidden="true">→</span>
+          </button>
+          <button class="text-link" id="resultRestartBtn" type="button" hidden>重新挑战</button>
+        </div>
+      </div>
+    </section>
+
+    <footer class="page-foot">
+      <span>NOCTURNE HOLD'EM</span>
+      <span class="foot-dot" aria-hidden="true">·</span>
+      <span>单人静态 · 联机房间 · 智能 AI</span>
+    </footer>
+  </div>
+
+  <div class="setup-overlay" id="setupOverlay">
+    <div class="setup-shell" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
+      <div class="setup-visual">
+        <div class="setup-visual-top">
+          <span class="setup-kicker">PRIVATE TABLE <i></i> EST. 2026</span>
+          <span class="setup-fig">NO. 001</span>
+        </div>
+        <div class="setup-lockup">
+          <h1 id="setupTitle">NOCTURNE</h1>
+          <p class="setup-cn">德州扑克</p>
+        </div>
+        <div class="setup-card-fan" aria-hidden="true">
+          <div class="fan-card fan-back"></div>
+          <div class="fan-card fan-ace">
+            <span class="fan-rank">A</span>
+            <span class="fan-suit">♠</span>
+          </div>
+          <div class="fan-card fan-king">
+            <span class="fan-rank">K</span>
+            <span class="fan-suit red">♥</span>
+          </div>
+          <div class="fan-chip chip-one"></div>
+          <div class="fan-chip chip-two"></div>
+        </div>
+        <p class="setup-quote">“一张桌子，五位对手，<br>每一次下注都是一次读心。”</p>
+        <div class="setup-features">
+          <span>无上限德州</span>
+          <span>真人级别 AI</span>
+          <span>无需注册</span>
+        </div>
+      </div>
+
+      <div class="setup-form">
+        <div class="setup-form-head">
+          <span class="eyebrow">TAKE A SEAT</span>
+          <h2>入座</h2>
+          <p>选好你的对手，牌局马上开始。</p>
+        </div>
+
+        <div class="mode-switch" id="modeSwitch" role="tablist" aria-label="游戏模式">
+          <button type="button" class="is-active" data-setup-mode="solo" role="tab" aria-selected="true">
+            <span class="mode-icon">♠</span>
+            <span><strong>单人牌桌</strong><small>你和电脑玩家</small></span>
+          </button>
+          <button type="button" data-setup-mode="online" role="tab" aria-selected="false">
+            <span class="mode-icon">◎</span>
+            <span><strong>联机房间</strong><small>朋友 + 电脑补位</small></span>
+          </button>
+        </div>
+
+        <label class="field">
+          <span class="field-label">你的昵称</span>
+          <span class="input-wrap">
+            <input id="playerNameInput" type="text" maxlength="10" autocomplete="off" spellcheck="false" value="你" placeholder="输入昵称">
+            <span class="input-suit" aria-hidden="true">♠</span>
+          </span>
+        </label>
+
+        <fieldset class="field" id="botCountField">
+          <legend class="field-label">电脑对手 <em id="opponentCountLabel">3 位</em></legend>
+          <div class="segmented segmented-bots" id="botCountGroup" role="group" aria-label="电脑对手数量">
+            <button type="button" data-bots="1">1</button>
+            <button type="button" data-bots="2">2</button>
+            <button type="button" data-bots="3" class="is-active">3</button>
+            <button type="button" data-bots="4">4</button>
+            <button type="button" data-bots="5">5</button>
+          </div>
+          <p class="field-hint">人越多，牌桌越热闹，等待也越久。</p>
+        </fieldset>
+
+        <fieldset class="field">
+          <legend class="field-label">对手难度</legend>
+          <div class="difficulty-grid" id="difficultyGroup">
+            <button type="button" class="difficulty-card" data-difficulty="casual">
+              <span class="difficulty-icon">☕</span>
+              <strong>休闲</strong>
+              <small>更松，适合放松</small>
+            </button>
+            <button type="button" class="difficulty-card is-active" data-difficulty="standard">
+              <span class="difficulty-icon">♠</span>
+              <strong>标准</strong>
+              <small>会算赔率与位置</small>
+            </button>
+            <button type="button" class="difficulty-card" data-difficulty="pro">
+              <span class="difficulty-icon">♛</span>
+              <strong>职业</strong>
+              <small>更紧、更凶、更会诈</small>
+            </button>
+          </div>
+        </fieldset>
+
+        <fieldset class="field">
+          <legend class="field-label">起始筹码</legend>
+          <div class="segmented" id="chipsGroup" role="group" aria-label="起始筹码">
+            <button type="button" data-chips="2000">2,000</button>
+            <button type="button" data-chips="5000" class="is-active">5,000</button>
+            <button type="button" data-chips="10000">10,000</button>
+          </div>
+          <p class="field-hint" id="chipsHint">100 个大盲，适合完整体验。</p>
+        </fieldset>
+
+        <div class="online-options" id="onlineOptions" hidden>
+          <label class="switch-field" for="botFillToggle">
+            <span class="switch-copy">
+              <strong>空位电脑补位</strong>
+              <small>不足 6 人时，空座自动交给 AI</small>
+            </span>
+            <input type="checkbox" id="botFillToggle" checked>
+            <i class="switch-track" aria-hidden="true"></i>
+          </label>
+
+          <div class="join-room-field">
+            <span class="field-label">已有房间号？</span>
+            <div class="join-room-row">
+              <input id="joinCodeInput" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="输入 4 位房间号" aria-label="房间号">
+              <button type="button" id="joinRoomBtn">加入房间</button>
+            </div>
+          </div>
+          <p class="field-hint">创建后把房间号或邀请链接发给朋友，人来齐后由任意玩家开始。</p>
+        </div>
+
+        <button class="start-btn" id="startBtn" type="button">
+          <span class="start-btn-copy">
+            <small id="startBtnSmall">DEAL ME IN</small>
+            <strong id="startBtnText">开始牌局</strong>
+          </span>
+          <span class="start-arrow" aria-hidden="true">→</span>
+        </button>
+
+        <div class="setup-meta">
+          <span id="setupModeHint"><i class="meta-dot"></i>本地运行，无需服务器</span>
+          <span class="setup-meta-links">
+            <button type="button" class="text-link" id="setupRecordsBtn">排行榜</button>
+            <button type="button" class="text-link" id="setupRulesBtn">先看玩法</button>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="lobby-overlay" id="lobbyOverlay" hidden>
+    <div class="lobby-shell" role="dialog" aria-modal="true" aria-labelledby="lobbyTitle">
+      <div class="lobby-top">
+        <div>
+          <span class="eyebrow">ONLINE TABLE · ROOM</span>
+          <h2 id="lobbyTitle">联机房间</h2>
+        </div>
+        <div class="lobby-room-code">
+          <span>房间号</span>
+          <strong id="lobbyCode">----</strong>
+        </div>
+      </div>
+
+      <div class="lobby-grid">
+        <section class="lobby-invite">
+          <span class="eyebrow">INVITE YOUR TABLE</span>
+          <p class="lobby-lead">把房间号或邀请链接发给朋友。空位可以由电脑玩家补上，至少 2 人即可开桌。</p>
+          <div class="lobby-big-code" id="lobbyCodeBig">----</div>
+          <button class="lobby-copy" id="copyInviteLobbyBtn" type="button">
+            <span>复制邀请链接</span>
+            <span aria-hidden="true">⧉</span>
+          </button>
+          <div class="lobby-config">
+            <div><span>电脑补位</span><b id="lobbyBotFill">开启</b></div>
+            <div><span>对手难度</span><b id="lobbyDifficulty">标准</b></div>
+            <div><span>起始筹码</span><b id="lobbyChips">5,000</b></div>
+          </div>
+          <button class="text-link lobby-leave" id="leaveLobbyBtn" type="button">离开房间</button>
+        </section>
+
+        <section class="lobby-seats">
+          <div class="lobby-seats-head">
+            <span class="eyebrow">PLAYERS</span>
+            <span id="lobbyHumanCount">1 / 6</span>
+          </div>
+          <ul class="lobby-player-list" id="lobbyPlayerList" aria-live="polite"></ul>
+          <div class="lobby-bot-slots" id="lobbyBotSlots"></div>
+          <button class="start-btn lobby-start" id="startOnlineBtn" type="button">
+            <span class="start-btn-copy">
+              <small>START HAND</small>
+              <strong>开始发牌</strong>
+            </span>
+            <span class="start-arrow" aria-hidden="true">→</span>
+          </button>
+          <p class="field-hint lobby-hint" id="lobbyHint">等待玩家入座……</p>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div class="online-pill" id="onlinePill" hidden>
+    <span class="online-pill-dot" id="onlinePillDot"></span>
+    <span class="online-pill-copy">房间 <b id="onlineRoomCode">----</b></span>
+    <span class="online-pill-status" id="onlinePillStatus">已连接</span>
+    <button type="button" id="copyInvitePillBtn" title="复制邀请链接" aria-label="复制邀请链接">⧉</button>
+    <button type="button" id="leaveOnlinePillBtn" title="离开房间" aria-label="离开房间">×</button>
+  </div>
+
+  <div class="modal-root" id="modalRoot" aria-live="polite"></div>
+  <div class="toast-root" id="toastRoot" aria-live="polite"></div>
+  <div class="confetti-root" id="confettiRoot" aria-hidden="true"></div>
+
+  <script src="js/cards.js"></script>
+  <script src="js/evaluator.js"></script>
+  <script src="js/engine.js"></script>
+  <script src="js/ai.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

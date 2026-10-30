@@ -1,0 +1,18 @@
+{
+  "name": "Nocturne 德州扑克",
+  "short_name": "Nocturne",
+  "description": "NOCTURNE 德州扑克 — 单人静态牌桌，也可创建联机房间，和朋友与电脑玩家同桌。",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#050c0a",
+  "theme_color": "#07110e",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "assets/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
