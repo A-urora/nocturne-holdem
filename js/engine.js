@@ -48,8 +48,10 @@
       this.config = {
         startingChips: 5000,
         blindEvery: 8,
+        variant: "holdem",
         ...options,
       };
+      this.variant = this.config.variant === "short" ? "short" : "holdem";
       this.players = (options.players || []).map((player, index) => ({
         id: player.id || "p" + (index + 1),
         name: player.name || "玩家 " + (index + 1),
@@ -314,7 +316,7 @@
       this.streetComplete = false;
       this.handResult = null;
       this.showdown = null;
-      this.deck = Cards.shuffle(Cards.createDeck());
+      this.deck = Cards.shuffle(Cards.createDeck(this.variant));
 
       for (const player of this.players) {
         const isOut = player.chips <= 0;
@@ -334,7 +336,11 @@
         player.isWinner = false;
       }
 
-      this._log("system", "第 " + this.handNumber + " 手开始", { handStart: true });
+      this._log(
+        "system",
+        (this.variant === "short" ? "短牌 6+ · " : "") + "第 " + this.handNumber + " 手开始",
+        { handStart: true }
+      );
       if (levelChanged) {
         if (this.handNumber === 1) {
           this._log("level", "盲注 " + this.smallBlind + " / " + this.bigBlind);
@@ -785,7 +791,10 @@
       const contenders = this.inHandPlayers;
       for (const player of contenders) {
         player.revealed = true;
-        player.bestHand = HandEvaluator.evaluateHand(player.hole.concat(this.community));
+        player.bestHand = HandEvaluator.evaluateHand(
+          player.hole.concat(this.community),
+          this.variant
+        );
       }
 
       const sidePots = this._buildSidePots();

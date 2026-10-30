@@ -35,6 +35,7 @@
     name: "你",
     bots: 3,
     difficulty: "standard",
+    variant: "holdem",
     chips: 5000,
     sound: true,
     speed: 1,
@@ -158,6 +159,8 @@
     opponentCountLabel: $("#opponentCountLabel"),
     botCountGroup: $("#botCountGroup"),
     difficultyGroup: $("#difficultyGroup"),
+    variantGroup: $("#variantGroup"),
+    variantHint: $("#variantHint"),
     chipsGroup: $("#chipsGroup"),
     chipsHint: $("#chipsHint"),
     startBtn: $("#startBtn"),
@@ -177,6 +180,7 @@
     lobbyCodeBig: $("#lobbyCodeBig"),
     lobbyBotFill: $("#lobbyBotFill"),
     lobbyDifficulty: $("#lobbyDifficulty"),
+    lobbyVariant: $("#lobbyVariant"),
     lobbyChips: $("#lobbyChips"),
     lobbyHumanCount: $("#lobbyHumanCount"),
     lobbyPlayerList: $("#lobbyPlayerList"),
@@ -220,12 +224,14 @@
     const name = String(raw.name || "你").trim().slice(0, 10) || "你";
     const bots = Math.max(1, Math.min(5, Number(raw.bots) || 3));
     const difficulty = ["casual", "standard", "pro"].includes(raw.difficulty) ? raw.difficulty : "standard";
+    const variant = raw.variant === "short" ? "short" : "holdem";
     const chips = [2000, 5000, 10000].includes(Number(raw.chips)) ? Number(raw.chips) : 5000;
     const speed = SPEEDS.includes(Number(raw.speed)) ? Number(raw.speed) : 1;
     return {
       name,
       bots,
       difficulty,
+      variant,
       chips,
       botFill: raw.botFill !== false,
       sound: raw.sound !== false,
@@ -890,6 +896,7 @@
       community: g.community || [],
       pot: g.pot || 0,
       currentBet: g.currentBet || 0,
+      variant: g.variant || view.variant || "holdem",
       smallBlind: g.smallBlind,
       bigBlind: g.bigBlind,
       blindLevel: g.blindLevel,
@@ -907,7 +914,11 @@
       startingChips: view.startingChips || g.startingChips || state.settings.chips,
       turnDeadline: view.turnDeadline || 0,
       serverTime: view.serverTime || Date.now(),
-      config: { blindEvery: g.blindEvery || 8, startingChips: view.startingChips || 5000 },
+      config: {
+        blindEvery: g.blindEvery || 8,
+        startingChips: view.startingChips || 5000,
+        variant: g.variant || view.variant || "holdem",
+      },
       version: view.seq,
       started: true,
       getTotalPot() {
@@ -1017,6 +1028,7 @@
     el.lobbyCodeBig.textContent = view.room;
     el.lobbyBotFill.textContent = lobby.botFill ? "开启" : "关闭";
     el.lobbyDifficulty.textContent = DIFFICULTY_NAMES[lobby.difficulty] || "标准";
+    el.lobbyVariant.textContent = lobby.variant === "short" ? "短牌 6+" : "标准德州";
     el.lobbyChips.textContent = format(lobby.startingChips);
     el.lobbyHumanCount.textContent = humans.length + " / " + lobby.maxHumans;
     el.lobbyPlayerList.innerHTML = humans
@@ -1218,6 +1230,7 @@
     state.settings.name = name;
     state.settings.botFill = el.botFillToggle.checked;
     state.settings.difficulty = $("#difficultyGroup .is-active")?.dataset.difficulty || state.settings.difficulty;
+    state.settings.variant = $("#variantGroup .is-active")?.dataset.variant === "short" ? "short" : "holdem";
     saveSettings(state.settings);
     setStartBusy(true, "创建中…");
     sound.unlock();
@@ -1226,6 +1239,7 @@
         name,
         botFill: state.settings.botFill,
         difficulty: state.settings.difficulty,
+        variant: state.settings.variant,
         startingChips: state.settings.chips,
       });
       enterOnlineSession(result.room, result.token, result.view);
@@ -1300,6 +1314,13 @@
     $$("#difficultyGroup button").forEach((button) => {
       button.classList.toggle("is-active", button.dataset.difficulty === s.difficulty);
     });
+    $$("#variantGroup button").forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.variant === s.variant);
+    });
+    el.variantHint.textContent =
+      s.variant === "short"
+        ? "36 张牌（去掉 2–5），同花大于葫芦，A-6-7-8-9 为最小顺子。"
+        : "经典 52 张牌，标准德州牌型。";
     $$("#chipsGroup button").forEach((button) => {
       button.classList.toggle("is-active", Number(button.dataset.chips) === s.chips);
     });
@@ -1335,6 +1356,20 @@
       $$("#botCountGroup button").forEach((b) => b.classList.toggle("is-active", b === button));
       el.opponentCountLabel.textContent = state.settings.bots + " 位";
       sound.click();
+    });
+
+    el.variantGroup.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-variant]");
+      if (!button) return;
+      state.settings.variant = button.dataset.variant === "short" ? "short" : "holdem";
+      $$("#variantGroup button").forEach((b) => {
+        b.classList.toggle("is-active", b === button);
+      });
+      el.variantHint.textContent =
+        state.settings.variant === "short"
+          ? "36 张牌（去掉 2–5），同花大于葫芦，A-6-7-8-9 为最小顺子。"
+          : "经典 52 张牌，标准德州牌型。";
+      saveSettings(state.settings);
     });
 
     el.difficultyGroup.addEventListener("click", (event) => {
@@ -1492,6 +1527,7 @@
       players,
       startingChips: settings.chips,
       blindEvery: 8,
+      variant: settings.variant,
     });
     state.hero = state.game.players[0];
     state.hero.isYou = true;
@@ -1509,7 +1545,15 @@
     hideSetup();
     renderAll(true);
     if (window.innerHeight >= 700) {
-      toast("牌局开始 · " + state.game.smallBlind + " / " + state.game.bigBlind + " 盲注", { gold: true });
+      toast(
+        (state.game.variant === "short" ? "短牌 6+ 开始" : "牌局开始") +
+          " · " +
+          state.game.smallBlind +
+          " / " +
+          state.game.bigBlind +
+          " 盲注",
+        { gold: true }
+      );
     }
     sound.card();
     setTimeout(() => sound.card(), 90);
@@ -1623,14 +1667,17 @@
     const game = state.game;
     if (!game) return;
     el.topHandNo.textContent = game.handNumber ? "#" + game.handNumber : "—";
-    el.topBlinds.textContent = game.smallBlind + " / " + game.bigBlind;
+    el.topBlinds.textContent =
+      (game.variant === "short" ? "6+ · " : "") + game.smallBlind + " / " + game.bigBlind;
     el.topLevel.textContent = game.getHandsUntilBlindIncrease() + " 手后";
     el.phaseLabel.textContent = PHASE_NAMES[game.phase] || game.phase;
     const pot = game.getTotalPot();
     el.potValue.textContent = format(pot);
     el.potSub.textContent = game.handResult ? "" : game.currentBet ? "当前注 " + format(game.currentBet) : "";
     el.tableNote.textContent = game.handNumber
-      ? "第 " + game.handNumber + " 手 · 盲注 " + game.smallBlind + " / " + game.bigBlind + " · " + game.inHandPlayers.length + " 人在局"
+      ? (game.variant === "short" ? "短牌 6+ · " : "") +
+        "第 " + game.handNumber + " 手 · 盲注 " + game.smallBlind + " / " + game.bigBlind +
+        " · " + game.inHandPlayers.length + " 人在局"
       : "等待玩家入座";
   }
 
@@ -1818,7 +1865,8 @@
     const delta = state.hero.chips - buyIn;
     el.sideProfit.textContent = signedFormat(delta);
     el.sideProfit.classList.toggle("is-negative", delta < 0);
-    el.sideBlinds.textContent = game.smallBlind + " / " + game.bigBlind;
+    el.sideBlinds.textContent =
+      (game.variant === "short" ? "6+ · " : "") + game.smallBlind + " / " + game.bigBlind;
     el.sideLevel.textContent = game.getHandsUntilBlindIncrease() + " 手后";
     const active = game.players.filter((p) => p.chips > 0).length;
     el.sidePlayers.textContent = active + " / " + game.players.length;
@@ -2052,7 +2100,11 @@
       ? hole.map((card) => cardMarkup(card)).join("")
       : '<span class="card-slot" style="--card-w:25px;--card-h:35px"></span><span class="card-slot" style="--card-w:25px;--card-h:35px"></span>';
     el.heroHandHint.textContent = hole.length
-      ? HE.describeHoleCards(hole, state.game ? state.game.community : [])
+      ? HE.describeHoleCards(
+          hole,
+          state.game ? state.game.community : [],
+          state.game ? state.game.variant : "holdem"
+        )
       : "等待发牌";
   }
 
@@ -2553,18 +2605,33 @@
   }
 
   function openRules(pause) {
-    const rankings = [
-      ["皇家同花顺", ["As", "Ks", "Qs", "Js", "Ts"], "最高牌型"],
-      ["同花顺", ["9h", "8h", "7h", "6h", "5h"], "同花 + 顺子"],
-      ["四条", ["Ah", "Ad", "Ac", "As", "Kd"], "四张同点"],
-      ["葫芦", ["Kh", "Kd", "Kc", "9s", "9d"], "三条 + 一对"],
-      ["同花", ["Ah", "Jh", "8h", "5h", "2h"], "五张同花"],
-      ["顺子", ["9s", "8d", "7c", "6h", "5s"], "五张连续"],
-      ["三条", ["Ah", "Ad", "Ac", "5s", "7d"], "三张同点"],
-      ["两对", ["Ah", "Ad", "Kc", "Ks", "7d"], "两组对子"],
-      ["一对", ["Ah", "Ad", "Kc", "Qs", "7d"], "一组对子"],
-      ["高牌", ["Ah", "Kd", "Qc", "9s", "7d"], "比最大单牌"],
-    ];
+    const short =
+      (state.game && state.game.variant === "short") || state.settings.variant === "short";
+    const rankings = short
+      ? [
+          ["皇家同花顺", ["As", "Ks", "Qs", "Js", "Ts"], "最高牌型"],
+          ["同花顺", ["Th", "9h", "8h", "7h", "6h"], "同花 + 顺子"],
+          ["四条", ["Ah", "Ad", "Ac", "As", "Kd"], "四张同点"],
+          ["同花", ["Ah", "Jh", "8h", "7h", "6h"], "五张同花"],
+          ["葫芦", ["Kh", "Kd", "Kc", "9s", "9d"], "三条 + 一对"],
+          ["顺子", ["Ts", "9d", "8c", "7h", "6s"], "五张连续"],
+          ["三条", ["Ah", "Ad", "Ac", "9s", "7d"], "三张同点"],
+          ["两对", ["Ah", "Ad", "Kc", "Ks", "7d"], "两组对子"],
+          ["一对", ["Ah", "Ad", "Kc", "Qs", "7d"], "一组对子"],
+          ["高牌", ["Ah", "Kd", "Qc", "9s", "7d"], "比最大单牌"],
+        ]
+      : [
+          ["皇家同花顺", ["As", "Ks", "Qs", "Js", "Ts"], "最高牌型"],
+          ["同花顺", ["9h", "8h", "7h", "6h", "5h"], "同花 + 顺子"],
+          ["四条", ["Ah", "Ad", "Ac", "As", "Kd"], "四张同点"],
+          ["葫芦", ["Kh", "Kd", "Kc", "9s", "9d"], "三条 + 一对"],
+          ["同花", ["Ah", "Jh", "8h", "5h", "2h"], "五张同花"],
+          ["顺子", ["9s", "8d", "7c", "6h", "5s"], "五张连续"],
+          ["三条", ["Ah", "Ad", "Ac", "5s", "7d"], "三张同点"],
+          ["两对", ["Ah", "Ad", "Kc", "Ks", "7d"], "两组对子"],
+          ["一对", ["Ah", "Ad", "Kc", "Qs", "7d"], "一组对子"],
+          ["高牌", ["Ah", "Kd", "Qc", "9s", "7d"], "比最大单牌"],
+        ];
     const rankingHtml = rankings
       .map(
         (row, index) =>
@@ -2584,7 +2651,11 @@
       title: "玩法与牌型",
       pause: pause !== false,
       body:
-        '<p class="modal-lead">无上限德州扑克（No-Limit Texas Hold\'em）。每位玩家发两张底牌，桌面上依次发出五张公共牌，用任意七张牌中最好的五张组成最终牌型。下注没有上限，你可以随时全下。</p>' +
+        '<p class="modal-lead">' +
+        (short
+          ? "短牌 6+（Six-plus Hold'em）。使用 36 张牌，牌型与下注结构接近德州扑克，但同花大于葫芦，A-6-7-8-9 是最小顺子。"
+          : "无上限德州扑克（No-Limit Texas Hold'em）。每位玩家发两张底牌，桌面上依次发出五张公共牌，用任意七张牌中最好的五张组成最终牌型。下注没有上限，你可以随时全下。") +
+        '</p>' +
         '<div class="rules-section"><h3>一手牌的流程</h3><ul>' +
         "<li>按钮位左侧两位玩家分别下小盲和大盲，随后每人发两张底牌。</li>" +
         "<li>翻牌前下注 → 发出三张公共牌（翻牌）→ 下注 → 转牌 → 下注 → 河牌 → 最后下注 → 摊牌。</li>" +
@@ -2595,7 +2666,9 @@
         '<div class="rules-section"><h3>牌型大小</h3><div class="ranking-list">' +
         rankingHtml +
         "</div></div>" +
-        '<div class="rules-section"><h3>本桌规则</h3><p>最多 6 人桌淘汰赛。起始筹码按入座设置，盲注 25 / 50，每 8 手提升一次盲注。筹码归零即被淘汰，最后留在桌上的玩家获胜。电脑玩家只会看到自己的底牌和公共牌，不会作弊。</p></div>' +
+        (short
+          ? '<div class="rules-section"><h3>短牌 6+ 规则</h3><p>使用 36 张牌，去掉 2、3、4、5。牌型顺序为：同花大于葫芦，其余与标准德州一致；A 可以组成 A-6-7-8-9 的最小顺子，也可以组成 A-K-Q-J-10 的最大顺子。本桌保留盲注结构，盲注 25 / 50，每 8 手提升一次。</p></div>'
+          : '<div class="rules-section"><h3>本桌规则</h3><p>最多 6 人桌淘汰赛。起始筹码按入座设置，盲注 25 / 50，每 8 手提升一次盲注。筹码归零即被淘汰，最后留在桌上的玩家获胜。电脑玩家只会看到自己的底牌和公共牌，不会作弊。</p></div>') +
         '<div class="rules-section"><h3>快捷键</h3><div class="shortcut-grid">' +
         '<span class="shortcut"><kbd>F</kbd>弃牌</span>' +
         '<span class="shortcut"><kbd>C</kbd>过牌 / 跟注</span>' +

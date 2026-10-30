@@ -126,11 +126,11 @@
    * Monte Carlo equity against unseen random hands. It never looks at the
    * opponents' actual hole cards, so the bots play honestly.
    */
-  function estimateEquity(hole, board, opponentCount, iterations, random = Math.random) {
+  function estimateEquity(hole, board, opponentCount, iterations, random = Math.random, variant = "holdem") {
     if (opponentCount <= 0) return 1;
     if (!hole || hole.length !== 2) return 0;
     const known = new Set(hole.concat(board || []));
-    const unseen = Cards.createDeck().filter((card) => !known.has(card));
+    const unseen = Cards.createDeck(variant).filter((card) => !known.has(card));
     const missingBoard = 5 - (board ? board.length : 0);
     const needed = opponentCount * 2 + missingBoard;
     if (needed > unseen.length) return 0;
@@ -138,7 +138,7 @@
     const fixedBoard = board ? board.slice() : [];
     const heroPrecomputed =
       missingBoard === 0
-        ? HandEvaluator.evaluateHand(hole.concat(fixedBoard))
+        ? HandEvaluator.evaluateHand(hole.concat(fixedBoard), variant)
         : null;
     let score = 0;
     const total = Math.max(24, iterations || 160);
@@ -158,13 +158,13 @@
         opponentHands.push([pool[cursor++], pool[cursor++]]);
       }
       const runout = fixedBoard.concat(pool.slice(cursor, cursor + missingBoard));
-      const hero = heroPrecomputed || HandEvaluator.evaluateHand(hole.concat(runout));
+      const hero = heroPrecomputed || HandEvaluator.evaluateHand(hole.concat(runout), variant);
 
       let best = hero;
       let ties = 1;
       let beaten = false;
       for (const opponentHole of opponentHands) {
-        const opponent = HandEvaluator.evaluateHand(opponentHole.concat(runout));
+        const opponent = HandEvaluator.evaluateHand(opponentHole.concat(runout), variant);
         const cmp = HandEvaluator.compareHands(opponent, best);
         if (cmp > 0) {
           best = opponent;
@@ -262,12 +262,14 @@
       const iterations =
         options.iterations ||
         Math.max(30, Math.round(diff.iterations * (opponentCount > 3 ? 0.7 : 1)));
+      const variant = game.variant === "short" ? "short" : "holdem";
       let equity = estimateEquity(
         player.hole,
         game.community,
         opponentCount,
         iterations,
-        random
+        random,
+        variant
       );
 
       // A tiny, bounded perception error makes casual bots less machine-like.
@@ -360,7 +362,7 @@
         let madeHand = null;
         if (game.community.length >= 3) {
           try {
-            madeHand = HandEvaluator.evaluateHand(player.hole.concat(game.community));
+            madeHand = HandEvaluator.evaluateHand(player.hole.concat(game.community), variant);
           } catch (error) {
             madeHand = null;
           }

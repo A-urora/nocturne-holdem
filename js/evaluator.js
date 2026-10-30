@@ -31,15 +31,46 @@
     "Straight Flush",
   ];
 
+  // In 6+ short deck, a flush outranks a full house. Straight still outranks
+  // trips in the common 7-card game, so only those two categories swap.
+  const SHORT_CATEGORY_NAMES = [
+    "高牌",
+    "一对",
+    "两对",
+    "三条",
+    "顺子",
+    "葫芦",
+    "同花",
+    "四条",
+    "同花顺",
+  ];
+
+  const SHORT_CATEGORY_EN = [
+    "High Card",
+    "One Pair",
+    "Two Pair",
+    "Three of a Kind",
+    "Straight",
+    "Full House",
+    "Flush",
+    "Four of a Kind",
+    "Straight Flush",
+  ];
+
   const cache5 = new Map();
 
   function cardSort(a, b) {
     return Cards.parseCard(b).rank - Cards.parseCard(a).rank;
   }
 
-  function straightHigh(ranks) {
+  function straightHigh(ranks, variant) {
     if (ranks.length !== 5) return 0;
-    if (ranks[0] === 14 && ranks[1] === 5 && ranks[2] === 4 && ranks[3] === 3 && ranks[4] === 2) {
+    if (variant === "short") {
+      // 6+ short deck wheel: A-6-7-8-9. A-2-3-4-5 does not exist.
+      if (ranks[0] === 14 && ranks[1] === 9 && ranks[2] === 8 && ranks[3] === 7 && ranks[4] === 6) {
+        return 9;
+      }
+    } else if (ranks[0] === 14 && ranks[1] === 5 && ranks[2] === 4 && ranks[3] === 3 && ranks[4] === 2) {
       return 5; // wheel: A-2-3-4-5
     }
     for (let i = 0; i < 4; i++) {
@@ -52,11 +83,12 @@
    * Rank exactly five cards. Returned score arrays compare lexicographically.
    * Category: 0 high card ... 8 straight flush.
    */
-  function evaluateFive(cards) {
+  function evaluateFive(cards, variant = "holdem") {
     if (!Array.isArray(cards) || cards.length !== 5) {
       throw new Error("evaluateFive requires exactly 5 cards");
     }
-    const key = cards.slice().sort().join("");
+    const short = variant === "short";
+    const key = (short ? "short|" : "holdem|") + cards.slice().sort().join("");
     const cached = cache5.get(key);
     if (cached) return cached;
 
@@ -66,7 +98,7 @@
     const suits = parsed.map((c) => c.suit);
     const flush = suits.every((s) => s === suits[0]);
     const unique = [...new Set(ranks)];
-    const straight = straightHigh(unique);
+    const straight = straightHigh(unique, variant);
 
     const counts = new Map();
     for (const rank of ranks) counts.set(rank, (counts.get(rank) || 0) + 1);
@@ -91,10 +123,10 @@
       category = 7;
       tiebreak = [groups[0][0], groups[1][0]];
     } else if (groups[0][1] === 3 && groups[1][1] === 2) {
-      category = 6;
+      category = short ? 5 : 6;
       tiebreak = [groups[0][0], groups[1][0]];
     } else if (flush) {
-      category = 5;
+      category = short ? 6 : 5;
       tiebreak = ranks.slice();
     } else if (straight) {
       category = 4;
@@ -114,21 +146,24 @@
       tiebreak = ranks.slice();
     }
 
+    const categoryNames = short ? SHORT_CATEGORY_NAMES : CATEGORY_NAMES;
+    const categoryEn = short ? SHORT_CATEGORY_EN : CATEGORY_EN;
     const result = {
       category,
       score: [category, ...tiebreak],
       cards: orderedCards,
-      categoryName: CATEGORY_NAMES[category],
-      categoryEn: CATEGORY_EN[category],
-      name: buildName(category, tiebreak),
-      shortName: buildShortName(category, tiebreak),
+      categoryName: categoryNames[category],
+      categoryEn: categoryEn[category],
+      name: buildName(category, tiebreak, short),
+      shortName: buildShortName(category, tiebreak, short),
       high: tiebreak[0] || 0,
+      variant: short ? "short" : "holdem",
     };
     if (cache5.size < 50000) cache5.set(key, result);
     return result;
   }
 
-  function buildName(category, tiebreak) {
+  function buildName(category, tiebreak, short) {
     const r = (n) => Cards.rankLabel(n);
     switch (category) {
       case 8:
@@ -136,11 +171,15 @@
       case 7:
         return r(tiebreak[0]) + " 四条";
       case 6:
+        if (short) return r(tiebreak[0]) + " 高同花";
         return r(tiebreak[0]) + " 带 " + r(tiebreak[1]) + " 的葫芦";
       case 5:
+        if (short) return r(tiebreak[0]) + " 带 " + r(tiebreak[1]) + " 的葫芦";
         return r(tiebreak[0]) + " 高同花";
       case 4:
-        return tiebreak[0] === 5 ? "A 到 5 顺子" : r(tiebreak[0]) + " 高顺子";
+        if (tiebreak[0] === 5) return "A 到 5 顺子";
+        if (short && tiebreak[0] === 9) return "A 到 6 顺子";
+        return r(tiebreak[0]) + " 高顺子";
       case 3:
         return r(tiebreak[0]) + " 三条";
       case 2:
@@ -152,7 +191,7 @@
     }
   }
 
-  function buildShortName(category, tiebreak) {
+  function buildShortName(category, tiebreak, short) {
     const r = (n) => Cards.rankLabel(n);
     switch (category) {
       case 8:
@@ -160,9 +199,9 @@
       case 7:
         return "四条 " + r(tiebreak[0]);
       case 6:
-        return "葫芦 " + r(tiebreak[0]);
+        return short ? "同花" : "葫芦 " + r(tiebreak[0]);
       case 5:
-        return "同花";
+        return short ? "葫芦 " + r(tiebreak[0]) : "同花";
       case 4:
         return "顺子";
       case 3:
@@ -203,16 +242,16 @@
   /**
    * Evaluate the best five-card hand from 5, 6 or 7 cards.
    */
-  function evaluateHand(cards) {
+  function evaluateHand(cards, variant = "holdem") {
     if (!Array.isArray(cards) || cards.length < 5 || cards.length > 7) {
       throw new Error("evaluateHand requires 5 to 7 cards");
     }
-    if (cards.length === 5) return evaluateFive(cards);
+    if (cards.length === 5) return evaluateFive(cards, variant);
     if (new Set(cards).size !== cards.length) throw new Error("Duplicate cards in hand");
 
     let best = null;
     for (const combo of combosOf(cards)) {
-      const rank = evaluateFive(combo);
+      const rank = evaluateFive(combo, variant);
       if (!best || compareScores(rank.score, best.score) > 0) best = rank;
     }
     return best;
@@ -235,11 +274,11 @@
     return compareScores(a.score, b.score);
   }
 
-  function describeHoleCards(hole, board) {
+  function describeHoleCards(hole, board, variant = "holdem") {
     if (!hole || hole.length !== 2) return "";
     if (board && board.length >= 3) {
       try {
-        return evaluateHand(hole.concat(board)).name;
+        return evaluateHand(hole.concat(board), variant).name;
       } catch (error) {
         return "";
       }

@@ -179,6 +179,7 @@ function buildLobby(room) {
     botFill: room.botFill,
     difficulty: room.difficulty,
     startingChips: room.startingChips,
+    variant: room.variant,
     maxHumans: MAX_HUMANS,
   };
 }
@@ -303,6 +304,7 @@ function buildGameView(room, viewerId) {
       community: game.community.slice(),
       pot: game.getTotalPot(),
       currentBet: game.currentBet,
+      variant: game.variant,
       smallBlind: game.smallBlind,
       bigBlind: game.bigBlind,
       blindLevel: game.blindLevel,
@@ -652,6 +654,7 @@ function createRoom(options) {
   const difficulty = ["casual", "standard", "pro"].includes(options.difficulty)
     ? options.difficulty
     : "standard";
+  const variant = options.variant === "short" ? "short" : "holdem";
   const startingChips = [2000, 5000, 10000].includes(Number(options.startingChips))
     ? Number(options.startingChips)
     : 5000;
@@ -665,6 +668,7 @@ function createRoom(options) {
     humanSeq: 0,
     botFill,
     difficulty,
+    variant,
     startingChips,
     game: null,
     ais: new Map(),
@@ -746,6 +750,7 @@ function makeGame(room) {
     players,
     startingChips: room.startingChips,
     blindEvery: 8,
+    variant: room.variant,
   });
   room.game = game;
   room.ais = new Map();
@@ -969,6 +974,7 @@ async function handleApi(req, res, url) {
         botFill: body.botFill,
         difficulty: body.difficulty,
         startingChips: body.startingChips,
+        variant: body.variant,
       });
       sendJson(res, 200, {
         ok: true,

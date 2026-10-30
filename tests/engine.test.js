@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { PokerGame } = require("../js/engine.js");
 const { PokerAI, createBotLineup } = require("../js/ai.js");
+const Cards = require("../js/cards.js");
 
 function makeGame(playerCount = 2, chips = 1000, options = {}) {
   const players = Array.from({ length: playerCount }, (_, i) => ({
@@ -15,6 +16,7 @@ function makeGame(playerCount = 2, chips = 1000, options = {}) {
     startingChips: Array.isArray(chips) ? Math.max(...chips) : chips,
     dealerIndex: options.dealerIndex ?? 0,
     blindEvery: options.blindEvery ?? 8,
+    variant: options.variant ?? "holdem",
   });
 }
 
@@ -226,4 +228,55 @@ test("blinds increase every eight hands", () => {
     }
     game.act(game.currentPlayerId, "fold");
   }
+});
+
+
+test("short deck uses 36 cards and the short-deck straight", () => {
+  const game = makeGame(2, 1000, { variant: "short", dealerIndex: 0 });
+  assert.equal(game.variant, "short");
+  game.startHand();
+  const cards = game.deck.concat(game.players.flatMap((player) => player.hole));
+  assert.equal(cards.length, 36);
+  assert.equal(cards.some((card) => ["2", "3", "4", "5"].includes(Cards.rankOf(card))), false);
+  assert.equal(game.players[0].hole.length, 2);
+});
+
+test("short deck AI plays legal hands and conserves chips", () => {
+  const players = Array.from({ length: 4 }, (_, i) => ({
+    id: "bot" + i,
+    name: "Bot" + i,
+    chips: 3000,
+    isHuman: false,
+  }));
+  const game = new PokerGame({
+    players,
+    startingChips: 3000,
+    dealerIndex: 0,
+    variant: "short",
+  });
+  const lineup = createBotLineup(4, "casual", () => 0.4);
+  const ais = lineup.map(() => new PokerAI("casual", () => 0.43));
+  for (let i = 0; i < 4; i++) game.players[i].style = lineup[i].style;
+
+  const initial = totalChips(game);
+  let handsPlayed = 0;
+  while (handsPlayed < 8 && game.players.filter((p) => p.chips > 0).length > 1) {
+    game.startHand();
+    let steps = 0;
+    while (!game.handResult && steps++ < 400) {
+      if (game.streetComplete) {
+        game.advanceStreet();
+        continue;
+      }
+      if (!game.currentPlayer) break;
+      const player = game.currentPlayer;
+      const action = ais[player.seat].decide(game, player, { iterations: 18 });
+      game.act(player.id, action.type, action.amount);
+    }
+    assert.ok(game.handResult, "short-deck hand should conclude");
+    assert.equal(totalChips(game), initial, "chips must be conserved");
+    handsPlayed += 1;
+    if (game.gameOver) break;
+  }
+  assert.ok(handsPlayed > 0);
 });

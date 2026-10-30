@@ -69,3 +69,34 @@ test("card helpers format labels correctly", () => {
   assert.equal(Cards.formatChips(12345), "12,345");
   assert.equal(Cards.formatChips(12000, true), "12k");
 });
+
+test("short deck flushes beat full houses", () => {
+  const flush = evaluateFive(["As", "Ks", "Qs", "Js", "9s"], "short");
+  const fullHouse = evaluateFive(["Kh", "Kd", "Kc", "6s", "6h"], "short");
+  assert.equal(flush.category, 6);
+  assert.equal(fullHouse.category, 5);
+  assert.equal(compareHands(flush, fullHouse), 1);
+  assert.equal(flush.name, "A 高同花");
+});
+
+test("standard deck keeps full houses above flushes", () => {
+  const flush = evaluateFive(["As", "Ks", "Qs", "Js", "9s"]);
+  const fullHouse = evaluateFive(["Kh", "Kd", "Kc", "6s", "6h"]);
+  assert.equal(compareHands(flush, fullHouse), -1);
+});
+
+test("short deck wheel is A-6-7-8-9", () => {
+  const wheel = evaluateFive(["As", "6h", "7d", "8c", "9s"], "short");
+  const tenHigh = evaluateFive(["Ts", "9d", "8c", "7h", "6s"], "short");
+  assert.equal(wheel.category, 4);
+  assert.equal(wheel.score[1], 9);
+  assert.equal(wheel.name, "A 到 6 顺子");
+  assert.equal(compareHands(tenHigh, wheel), 1);
+  assert.equal(evaluateFive(["As", "6h", "7d", "8c", "9s"]).category, 0);
+});
+
+test("short deck createDeck removes 2 through 5", () => {
+  const deck = Cards.createDeck("short");
+  assert.equal(deck.length, 36);
+  assert.equal(deck.some((card) => ["2", "3", "4", "5"].includes(Cards.rankOf(card))), false);
+});

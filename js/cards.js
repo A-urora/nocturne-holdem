@@ -7,6 +7,7 @@
   "use strict";
 
   const RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"];
+  const SHORT_RANKS = ["6", "7", "8", "9", "T", "J", "Q", "K", "A"];
   const SUITS = ["s", "h", "d", "c"];
   const SUIT_SYMBOLS = { s: "♠", h: "♥", d: "♦", c: "♣" };
   const SUIT_NAMES = { s: "黑桃", h: "红桃", d: "方块", c: "梅花" };
@@ -16,10 +17,11 @@
   };
   const RED_SUITS = new Set(["h", "d"]);
 
-  function createDeck() {
+  function createDeck(variant = "holdem") {
+    const ranks = variant === "short" ? SHORT_RANKS : RANKS;
     const deck = [];
     for (const suit of SUITS) {
-      for (const rank of RANKS) deck.push(rank + suit);
+      for (const rank of ranks) deck.push(rank + suit);
     }
     return deck;
   }
@@ -124,6 +126,7 @@
 
   return {
     RANKS,
+    SHORT_RANKS,
     SUITS,
     SUIT_SYMBOLS,
     SUIT_NAMES,

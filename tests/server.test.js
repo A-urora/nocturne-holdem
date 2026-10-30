@@ -178,3 +178,31 @@ test("lobby leave transfers host and invalidates the token", async () => {
     assert.equal(old.status, 401);
   });
 });
+
+
+test("short deck rooms expose the variant and 36-card private hands", async () => {
+  await withServer(async (base) => {
+    const created = await post(base, "/api/create", {
+      name: "短牌房主",
+      botFill: true,
+      difficulty: "standard",
+      startingChips: 5000,
+      variant: "short",
+    });
+    assert.equal(created.response.status, 200);
+    assert.equal(created.data.view.lobby.variant, "short");
+    await post(base, "/api/start", {
+      room: created.data.room,
+      token: created.data.token,
+    });
+    const state = await fetch(
+      base + "/api/state?room=" + created.data.room + "&token=" + created.data.token
+    ).then((response) => response.json());
+    assert.equal(state.view.game.variant, "short");
+    assert.equal(state.view.game.players[0].hole.length, 2);
+    for (const card of state.view.game.players[0].hole) {
+      const rank = card.slice(0, -1);
+      assert.equal(["2", "3", "4", "5"].includes(rank), false);
+    }
+  });
+});

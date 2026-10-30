@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#07110e">
-  <meta name="description" content="NOCTURNE 德州扑克 — 单人静态牌桌，也可创建联机房间，和朋友与电脑玩家同桌。">
+  <meta name="description" content="NOCTURNE 德州扑克 — 标准德州与短牌 6+，单人静态牌桌，也可创建联机房间。">
   <title>NOCTURNE · 德州扑克</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <link rel="manifest" href="manifest.webmanifest">
@@ -304,6 +304,23 @@
           </span>
         </label>
 
+        <fieldset class="field" id="variantField">
+          <legend class="field-label">牌局规则</legend>
+          <div class="variant-grid" id="variantGroup" role="group" aria-label="牌局规则">
+            <button type="button" class="difficulty-card variant-card is-active" data-variant="holdem">
+              <span class="difficulty-icon">♠</span>
+              <strong>标准德州</strong>
+              <small>52 张 · 经典牌型</small>
+            </button>
+            <button type="button" class="difficulty-card variant-card" data-variant="short">
+              <span class="difficulty-icon">6+</span>
+              <strong>短牌 6+</strong>
+              <small>36 张 · 同花 &gt; 葫芦</small>
+            </button>
+          </div>
+          <p class="field-hint" id="variantHint">经典 52 张牌，标准德州牌型。</p>
+        </fieldset>
+
         <fieldset class="field" id="botCountField">
           <legend class="field-label">电脑对手 <em id="opponentCountLabel">3 位</em></legend>
           <div class="segmented segmented-bots" id="botCountGroup" role="group" aria-label="电脑对手数量">
@@ -409,6 +426,7 @@
             <span aria-hidden="true">⧉</span>
           </button>
           <div class="lobby-config">
+            <div><span>牌局规则</span><b id="lobbyVariant">标准德州</b></div>
             <div><span>电脑补位</span><b id="lobbyBotFill">开启</b></div>
             <div><span>对手难度</span><b id="lobbyDifficulty">标准</b></div>
             <div><span>起始筹码</span><b id="lobbyChips">5,000</b></div>
