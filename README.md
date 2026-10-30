@@ -188,7 +188,7 @@ js/evaluator.js            5–7 张牌最佳牌型评估
 js/engine.js               无上限德州规则引擎（下注轮 / 边池 / 摊牌）
 js/ai.js                   胜率模拟与电脑玩家策略
 js/app.js                  界面渲染、单机流程、联机 UI、SSE 客户端与战绩弹窗
-server.js                  零依赖 Node 联机房间服务（静态托管 + API + SSE）
+server.js                  零框架 Node 联机房间服务（静态托管 + API + SSE）
 stats-store.js             排行榜/历史战绩存储（JSON 或 Postgres 快照）
 tests/                     牌型、规则、AI、联机 API 与排行榜测试
 render.yaml                Render 一键部署配置
