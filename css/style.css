@@ -4340,3 +4340,28 @@ input[type="range"]::-moz-range-thumb {
   font-size: 13px;
   letter-spacing: -0.04em;
 }
+
+.records-scope {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.records-scope button {
+  flex: 1;
+  height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 6px;
+  background: rgba(3, 12, 9, 0.42);
+  color: var(--muted);
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.records-scope button:hover { color: var(--cream); }
+
+.records-scope button.is-active {
+  border-color: rgba(214, 179, 106, 0.32);
+  background: rgba(214, 179, 106, 0.1);
+  color: var(--gold-bright);
+}

@@ -11,6 +11,8 @@
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
   const SETTINGS_KEY = "nocturne.holdem.settings.v1";
   const ONLINE_SESSION_PREFIX = "nocturne.online.session.";
+  const SOLO_HISTORY_KEY = "nocturne.solo.history.v1";
+  const SOLO_HISTORY_LIMIT = 100;
   const ONLINE_POLL_MS = 5000;
   const POSITIONS = {
     2: ["pos-bottom", "pos-top"],
@@ -81,6 +83,8 @@
     lastResultHand: 0,
     lastResultSoundHand: 0,
     recordsRequest: 0,
+    recordsScope: null,
+    recordedSoloGameId: null,
     controlKey: "",
     raiseTarget: 0,
     sliderMin: 0,
@@ -166,6 +170,7 @@
     startBtn: $("#startBtn"),
     setupRulesBtn: $("#setupRulesBtn"),
     setupRecordsBtn: $("#setupRecordsBtn"),
+    setupHistoryBtn: $("#setupHistoryBtn"),
     modeSwitch: $("#modeSwitch"),
     botCountField: $("#botCountField"),
     onlineOptions: $("#onlineOptions"),
@@ -218,6 +223,81 @@
     } catch (error) {
       /* file:// or private mode — settings simply won't persist */
     }
+  }
+
+  function loadSoloHistory() {
+    try {
+      const raw = localStorage.getItem(SOLO_HISTORY_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((entry) => entry && typeof entry.name === "string" && Number.isFinite(Number(entry.endedAt)))
+        .slice(0, SOLO_HISTORY_LIMIT);
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function saveSoloHistory(rows) {
+    try {
+      localStorage.setItem(SOLO_HISTORY_KEY, JSON.stringify(rows.slice(0, SOLO_HISTORY_LIMIT)));
+    } catch (error) {
+      /* file:// or private mode — history simply won't persist */
+    }
+  }
+
+  function recordSoloResult(game) {
+    if (!game || !state.hero) return;
+    if (state.recordedSoloGameId === game.id) return;
+    const hero = state.hero;
+    const finished = Boolean(game.gameOver || game.champion || hero.chips <= 0);
+    if (!finished) return;
+    state.recordedSoloGameId = game.id;
+
+    const ranked = game.players
+      .slice()
+      .sort((a, b) => b.chips - a.chips || a.seat - b.seat);
+    const place = ranked.findIndex((player) => player.id === hero.id) + 1;
+    const buyIn = game.startingChips || state.settings.chips;
+    const entry = {
+      id: "solo-" + game.id + "-" + Date.now(),
+      endedAt: Date.now(),
+      name: hero.name,
+      variant: game.variant === "short" ? "short" : "holdem",
+      difficulty: state.settings.difficulty,
+      bots: game.players.filter((player) => !player.isHuman).length,
+      buyIn,
+      finalChips: hero.chips,
+      net: hero.chips - buyIn,
+      place,
+      hands: game.handNumber,
+      won: Boolean(game.champion && game.champion.id === hero.id),
+    };
+    const rows = loadSoloHistory();
+    rows.unshift(entry);
+    saveSoloHistory(rows);
+  }
+
+  function soloHistoryFor(name) {
+    const key = String(name || "").toLocaleLowerCase();
+    return loadSoloHistory()
+      .filter((entry) => String(entry.name || "").toLocaleLowerCase() === key)
+      .sort((a, b) => b.endedAt - a.endedAt);
+  }
+
+  function soloSummaryFor(rows) {
+    const summary = { sessions: rows.length, hands: 0, wins: 0, net: 0, bestPlace: null };
+    for (const row of rows) {
+      summary.hands += Number(row.hands) || 0;
+      summary.wins += row.won ? 1 : 0;
+      summary.net += Number(row.net) || 0;
+      const place = Number(row.place);
+      if (Number.isFinite(place) && (summary.bestPlace === null || place < summary.bestPlace)) {
+        summary.bestPlace = place;
+      }
+    }
+    return summary;
   }
 
   function sanitizeSettings(raw) {
@@ -1439,6 +1519,7 @@
     });
 
     el.setupRecordsBtn.addEventListener("click", () => openRecords("board", false));
+    el.setupHistoryBtn.addEventListener("click", () => openRecords("history", false));
     el.setupRulesBtn.addEventListener("click", () => openRules(false));
   }
 
@@ -1493,6 +1574,7 @@
     state.autoNext = false;
     state.mode = "solo";
     state.setupMode = "solo";
+    state.recordedSoloGameId = null;
     state.online.connected = false;
     el.app.classList.remove("is-online");
     el.lobbyOverlay.hidden = true;
@@ -2128,6 +2210,7 @@
     const roomDone = online && state.online.status === "done";
     const humanEliminated = Boolean(result.humanEliminated || (hero && hero.chips <= 0));
     const gameOver = Boolean(result.gameOver || game.gameOver || roomDone);
+    if (!online && (gameOver || humanEliminated)) recordSoloResult(game);
 
     el.resultEyebrow.textContent = isShowdown ? "SHOWDOWN · 摊牌" : "HAND COMPLETE · 本手结束";
     if (humanWin) {
@@ -2427,6 +2510,11 @@
     });
 
     document.addEventListener("click", (event) => {
+      const scope = event.target.closest("[data-records-scope]");
+      if (scope && scope.closest("#modalRoot")) {
+        loadHistoryScope(scope.dataset.recordsScope);
+        return;
+      }
       const tab = event.target.closest("[data-records-tab]");
       if (!tab || !tab.closest("#modalRoot") || tab.disabled) return;
       loadRecordsTab(tab.dataset.recordsTab);
@@ -2747,10 +2835,41 @@
   function recordsTableHtml(rows, kind) {
     if (!rows.length) {
       return '<div class="records-empty">' +
-        (kind === "board" ? "还没有已结束的联机牌局。和朋友打一局，成绩会记录在这里。" : "这个昵称还没有历史战绩。") +
+        (kind === "board"
+          ? "还没有已结束的联机牌局。和朋友打一局，成绩会记录在这里。"
+          : kind === "solo"
+            ? "这个昵称还没有完成的单机牌局。"
+            : "这个昵称还没有已结束的联机牌局。") +
         "</div>";
     }
     const me = currentPlayerName().toLocaleLowerCase();
+    if (kind === "solo") {
+      return (
+        '<div class="records-table-wrap"><table class="records-table">' +
+        "<thead><tr><th>时间</th><th>规则</th><th>名次</th><th class=hide-mobile>手数</th><th>最终筹码</th><th>输赢</th></tr></thead><tbody>" +
+        rows.map((row) => {
+          const netClass = row.net > 0 ? "net-pos" : row.net < 0 ? "net-neg" : "";
+          const date = new Date(row.endedAt);
+          const stamp =
+            String(date.getMonth() + 1).padStart(2, "0") + "/" +
+            String(date.getDate()).padStart(2, "0") + " " +
+            String(date.getHours()).padStart(2, "0") + ":" +
+            String(date.getMinutes()).padStart(2, "0");
+          return (
+            "<tr>" +
+            "<td>" + stamp + "</td>" +
+            "<td>" + (row.variant === "short" ? "短牌 6+" : "标准") + "</td>" +
+            "<td>" + (row.place || "—") + "</td>" +
+            '<td class="hide-mobile">' + (row.hands || 0) + "</td>" +
+            "<td>" + format(row.finalChips) + "</td>" +
+            '<td class="' + netClass + '">' + signedFormat(row.net) + "</td>" +
+            "</tr>"
+          );
+        }).join("") +
+        "</tbody></table></div>" +
+        '<p class="records-note">单机战绩仅保存在当前浏览器 · 不计入全球排行榜</p>'
+      );
+    }
     if (kind === "board") {
       return (
         '<div class="records-table-wrap"><table class="records-table">' +
@@ -2799,57 +2918,117 @@
     );
   }
 
+  function recordsSummaryHtml(summary) {
+    const netClass = summary.net > 0 ? "is-pos" : summary.net < 0 ? "is-neg" : "";
+    return (
+      '<div class="records-summary">' +
+      "<div><span>局数</span><b>" + (summary.sessions || 0) + "</b></div>" +
+      "<div><span>手数</span><b>" + (summary.hands || 0) + "</b></div>" +
+      "<div><span>胜场</span><b>" + (summary.wins || 0) + "</b></div>" +
+      '<div><span>总积分</span><b class="' + netClass + '">' + signedFormat(summary.net || 0) + "</b></div>" +
+      "</div>"
+    );
+  }
+
+  function historyScopeTabsHtml(scope) {
+    return (
+      '<div class="records-scope">' +
+      '<button type="button" data-records-scope="online" class="' +
+      (scope === "online" ? "is-active" : "") +
+      '">联机战绩</button>' +
+      '<button type="button" data-records-scope="solo" class="' +
+      (scope === "solo" ? "is-active" : "") +
+      '">单机战绩</button>' +
+      "</div>" +
+      '<div id="recordsHistoryBody"><div class="records-loading">读取中…</div></div>'
+    );
+  }
+
+  async function loadHistoryScope(scope) {
+    const body = $("#recordsHistoryBody");
+    if (!body) return;
+    scope = scope === "solo" ? "solo" : "online";
+    state.recordsScope = scope;
+    $$("[data-records-scope]").forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.recordsScope === scope);
+    });
+    const requestId = ++state.recordsRequest;
+
+    if (scope === "solo") {
+      const rows = soloHistoryFor(currentPlayerName());
+      body.innerHTML =
+        recordsSummaryHtml(soloSummaryFor(rows)) +
+        recordsTableHtml(rows, "solo");
+      return;
+    }
+
+    if (!state.onlineAvailable) {
+      body.innerHTML =
+        '<div class="records-empty">联机战绩需要联机服务器。启动 <b>node server.js</b> 或使用 Render 后即可查看；单机战绩不受影响。</div>';
+      return;
+    }
+
+    body.innerHTML = '<div class="records-loading">读取中…</div>';
+    try {
+      const name = currentPlayerName();
+      const data = await recordsFetch("/api/history?name=" + encodeURIComponent(name));
+      if (requestId !== state.recordsRequest || !$("#recordsHistoryBody")) return;
+      const warning = data.storageError
+        ? '<div class="records-warning">战绩文件写入失败，当前数据可能不会持久保存：' + escapeHtml(data.storageError) + "</div>"
+        : "";
+      const summary = data.summary || { sessions: 0, hands: 0, wins: 0, net: 0 };
+      body.innerHTML =
+        warning +
+        recordsSummaryHtml(summary) +
+        recordsTableHtml(data.sessions || [], "history") +
+        '<p class="records-note">只统计已结束的联机牌局 · 单机战绩请切换到「单机战绩」</p>';
+    } catch (error) {
+      if (requestId !== state.recordsRequest) return;
+      body.innerHTML = '<div class="records-empty">' + escapeHtml(error.message || "读取联机战绩失败。") + "</div>";
+    }
+  }
+
   async function loadRecordsTab(tab) {
     const body = $("#recordsBody");
     if (!body) return;
     $$("#recordsTabs button").forEach((button) => {
       button.classList.toggle("is-active", button.dataset.recordsTab === tab);
     });
-    const requestId = ++state.recordsRequest;
     if (tab === "log") {
+      state.recordsRequest += 1;
       body.innerHTML = fullLogHtml();
       return;
     }
+    if (tab === "history") {
+      const scope =
+        state.recordsScope || (state.mode === "online" ? "online" : "solo");
+      body.innerHTML = historyScopeTabsHtml(scope);
+      loadHistoryScope(scope);
+      return;
+    }
+    const requestId = ++state.recordsRequest;
     if (!state.onlineAvailable) {
-      body.innerHTML = '<div class="records-empty">排行榜和历史战绩需要联机服务器。启动 <b>node server.js</b> 或部署到 Render 后即可使用。</div>';
+      body.innerHTML = '<div class="records-empty">排行榜需要联机服务器。启动 <b>node server.js</b> 或部署到 Render 后即可使用。</div>';
       return;
     }
     body.innerHTML = '<div class="records-loading">读取中…</div>';
     try {
-      if (tab === "board") {
-        const data = await recordsFetch("/api/leaderboard");
-        if (requestId !== state.recordsRequest || !$("#recordsBody")) return;
-        const warning = data.storageError
-          ? '<div class="records-warning">战绩文件写入失败，当前数据可能不会持久保存：' + escapeHtml(data.storageError) + "</div>"
-          : "";
-        body.innerHTML = warning + recordsTableHtml(data.board || [], "board");
-      } else {
-        const name = currentPlayerName();
-        const data = await recordsFetch("/api/history?name=" + encodeURIComponent(name));
-        if (requestId !== state.recordsRequest || !$("#recordsBody")) return;
-        const summary = data.summary || { sessions: 0, hands: 0, wins: 0, net: 0 };
-        const netClass = summary.net > 0 ? "is-pos" : summary.net < 0 ? "is-neg" : "";
-        const warning = data.storageError
-          ? '<div class="records-warning">战绩文件写入失败，当前数据可能不会持久保存：' + escapeHtml(data.storageError) + "</div>"
-          : "";
-        body.innerHTML =
-          warning +
-          '<div class="records-summary">' +
-          "<div><span>局数</span><b>" + summary.sessions + "</b></div>" +
-          "<div><span>手数</span><b>" + summary.hands + "</b></div>" +
-          "<div><span>胜场</span><b>" + summary.wins + "</b></div>" +
-          '<div><span>总积分</span><b class="' + netClass + '">' + signedFormat(summary.net) + "</b></div>" +
-          "</div>" +
-          recordsTableHtml(data.sessions || [], "history");
-      }
+      const data = await recordsFetch("/api/leaderboard");
+      if (requestId !== state.recordsRequest || !$("#recordsBody")) return;
+      const warning = data.storageError
+        ? '<div class="records-warning">战绩文件写入失败，当前数据可能不会持久保存：' + escapeHtml(data.storageError) + "</div>"
+        : "";
+      body.innerHTML = warning + recordsTableHtml(data.board || [], "board");
     } catch (error) {
       if (requestId !== state.recordsRequest) return;
-      body.innerHTML = '<div class="records-empty">' + escapeHtml(error.message || "读取战绩失败。") + "</div>";
+      body.innerHTML = '<div class="records-empty">' + escapeHtml(error.message || "读取排行榜失败。") + "</div>";
     }
   }
 
   function openRecords(tab, pause) {
     const hasGame = Boolean(state.game && state.game.log && state.game.log.length);
+    state.recordsScope =
+      state.mode === "online" || state.setupMode === "online" ? "online" : "solo";
     const active = tab === "log" && !hasGame ? "board" : (tab || "board");
     openModal({
       eyebrow: "CLUB RECORDS",
