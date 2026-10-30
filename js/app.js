@@ -63,6 +63,7 @@
       lastStateAt: 0,
       serverOffset: 0,
       errorCount: 0,
+      lastLogId: 0,
       pollTimer: null,
       polling: false,
     },
@@ -82,6 +83,8 @@
     lastLevel: -1,
     lastResultHand: 0,
     lastResultSoundHand: 0,
+    lastTurnSignal: "",
+    lastTimerWarnSignal: "",
     recordsRequest: 0,
     recordsScope: null,
     recordedSoloGameId: null,
@@ -542,9 +545,28 @@
       card() {
         noise(0.055, 0.02, 2400);
       },
+      deal() {
+        noise(0.06, 0.02, 2500);
+        setTimeout(() => noise(0.055, 0.017, 2250), 65);
+        setTimeout(() => noise(0.05, 0.015, 2700), 130);
+        setTimeout(() => noise(0.045, 0.013, 2400), 195);
+      },
+      flip() {
+        noise(0.045, 0.02, 3200);
+        tone(980, 0.045, 0.012, "triangle");
+      },
       chip() {
         noise(0.1, 0.035, 1150);
         tone(680, 0.06, 0.018, "triangle");
+      },
+      call() {
+        noise(0.075, 0.026, 1200);
+        tone(610, 0.055, 0.014, "sine");
+      },
+      raise() {
+        noise(0.12, 0.033, 900);
+        tone(520, 0.075, 0.016, "triangle");
+        tone(790, 0.08, 0.012, "triangle", 0.055);
       },
       check() {
         tone(190, 0.07, 0.045, "sine");
@@ -569,9 +591,34 @@
         tone(174.61, 0.5, 0.018, "sine", 0.1);
       },
       allIn() {
+        noise(0.16, 0.045, 560);
         tone(330, 0.14, 0.03, "triangle");
         tone(440, 0.16, 0.03, "triangle", 0.08);
         tone(660, 0.3, 0.025, "triangle", 0.16);
+        tone(880, 0.36, 0.014, "sine", 0.25);
+      },
+      blind() {
+        tone(392, 0.18, 0.02, "sine");
+        tone(523.25, 0.22, 0.016, "sine", 0.08);
+        tone(659.25, 0.26, 0.012, "sine", 0.16);
+      },
+      showdown() {
+        noise(0.07, 0.025, 2700);
+        tone(440, 0.24, 0.018, "sine");
+        tone(554.37, 0.3, 0.014, "sine", 0.06);
+        tone(659.25, 0.36, 0.012, "sine", 0.13);
+      },
+      turn() {
+        tone(880, 0.08, 0.018, "sine");
+        tone(1174.66, 0.1, 0.012, "sine", 0.07);
+      },
+      warning() {
+        tone(920, 0.055, 0.022, "square");
+        tone(920, 0.06, 0.022, "square", 0.13);
+      },
+      error() {
+        tone(170, 0.12, 0.018, "sawtooth");
+        tone(135, 0.18, 0.016, "sawtooth", 0.06);
       },
       click() {
         tone(420, 0.03, 0.012, "triangle");
@@ -584,11 +631,37 @@
     if (action.type === "check") sound.check();
     else if (action.type === "fold") sound.fold();
     else if (action.type === "raise" || action.type === "bet") {
-      if (action.fullRaise && action.amount) sound.chip();
       if (action.allIn) sound.allIn();
-      else sound.chip();
-    } else if (action.type === "call") sound.chip();
+      else sound.raise();
+    } else if (action.type === "call") sound.call();
     else sound.click();
+  }
+
+  function maybeTurnCue(game) {
+    if (!game || state.paused || game.handResult || game.streetComplete) return;
+    const current = game.currentPlayer;
+    if (!current || !current.isYou) return;
+    const key = [
+      game.id,
+      game.handNumber,
+      game.phase,
+      game.version,
+      current.id,
+    ].join(":");
+    if (state.lastTurnSignal === key) return;
+    state.lastTurnSignal = key;
+    sound.turn();
+  }
+
+  function playOnlineLogSound(entry) {
+    if (!state.settings.sound || !entry || entry.kind !== "action" || !entry.action) return;
+    if (state.hero && entry.playerId === state.hero.id) return;
+    playActionSound({
+      type: entry.action,
+      allIn: Boolean(entry.allIn),
+      fullRaise: Boolean(entry.fullRaise),
+      amount: entry.amount,
+    });
   }
 
   /* ---------------------------------------------------------- online plumbing */
@@ -785,6 +858,7 @@
     state.online.actionPending = false;
     state.online.errorCount = 0;
     state.online.lastStateAt = 0;
+    state.online.lastLogId = 0;
     state.mode = "online";
     state.setupMode = "online";
     state.game = null;
@@ -1064,6 +1138,7 @@
     const remote = makeRemoteGame(view);
     const gameKey = view.room + ":" + remote.players.map((player) => player.id).join(",");
     const firstGame = state.online.gameKey !== gameKey;
+    const previousLogId = state.online.lastLogId;
     if (firstGame) {
       state.online.gameKey = gameKey;
       state.lastBoardCount = 0;
@@ -1071,8 +1146,29 @@
       state.lastResultHand = 0;
       state.lastResultSoundHand = 0;
       state.controlKey = "";
+      state.lastTurnSignal = "";
+      state.lastTimerWarnSignal = "";
     }
+    const newEntries = (remote.log || []).filter((entry) => entry.id > previousLogId);
+    const previousLevel = state.lastLevel;
+    if (firstGame) {
+      state.lastLevel = Number(remote.blindLevel) || 0;
+    } else if (Number(remote.blindLevel) > previousLevel) {
+      state.lastLevel = Number(remote.blindLevel) || 0;
+      sound.blind();
+      toast("盲注提升至 " + remote.smallBlind + " / " + remote.bigBlind, { gold: true, duration: 1500 });
+    }
+    if (!firstGame) {
+      for (const entry of newEntries.slice(-4)) playOnlineLogSound(entry);
+    }
+    state.online.lastLogId = (remote.log || []).reduce(
+      (max, entry) => Math.max(max, Number(entry.id) || 0),
+      firstGame ? 0 : previousLogId
+    );
     const previousHand = state.lastHand;
+    const newHand = Boolean(
+      remote.handNumber && remote.handNumber !== previousHand && !remote.handResult
+    );
     state.game = remote;
     state.hero = remote.players[0] || null;
     state.ais = new Map();
@@ -1083,13 +1179,10 @@
       updateStaticUi();
     }
     updateOnlinePill();
+    if (newHand) sound.deal();
     renderAll(firstGame);
     if (firstGame && window.innerHeight >= 700) {
       toast("联机牌局开始 · 房间 " + view.room, { gold: true, duration: 2200 });
-    }
-    if (remote.handNumber && remote.handNumber !== previousHand && !remote.handResult) {
-      sound.card();
-      setTimeout(() => sound.card(), 70);
     }
     if (remote.handResult) {
       // renderDock() already delegates to showResult(); this also keeps the
@@ -1173,6 +1266,13 @@
     clock.textContent = left + "s";
     clock.classList.toggle("is-low", left <= 10);
     if (state.online.connected) el.onlinePillStatus.textContent = "行动 " + left + "s";
+    if (left > 0 && left <= 5) {
+      const warnKey = [state.online.code, state.game.handNumber, state.game.phase, state.game.version, current.id].join(":");
+      if (state.lastTimerWarnSignal !== warnKey) {
+        state.lastTimerWarnSignal = warnKey;
+        sound.warning();
+      }
+    }
   }
 
   function returnToSetupAfterOnline() {
@@ -1203,6 +1303,7 @@
       lastStateAt: 0,
       serverOffset: 0,
       errorCount: 0,
+      lastLogId: 0,
       pollTimer: null,
       polling: false,
     };
@@ -1258,6 +1359,7 @@
       lastStateAt: 0,
       serverOffset: 0,
       errorCount: 0,
+      lastLogId: 0,
       pollTimer: null,
       polling: false,
     };
@@ -1442,6 +1544,7 @@
       const button = event.target.closest("button[data-variant]");
       if (!button) return;
       state.settings.variant = button.dataset.variant === "short" ? "short" : "holdem";
+      sound.click();
       $$("#variantGroup button").forEach((b) => {
         b.classList.toggle("is-active", b === button);
       });
@@ -1625,6 +1728,7 @@
     state.lastHand = state.game.handNumber;
     state.lastBoardCount = 0;
     hideSetup();
+    sound.deal();
     renderAll(true);
     if (window.innerHeight >= 700) {
       toast(
@@ -1637,8 +1741,6 @@
         { gold: true }
       );
     }
-    sound.card();
-    setTimeout(() => sound.card(), 90);
     setTimeout(() => {
       state.beginning = false;
     }, 700);
@@ -1664,11 +1766,11 @@
     state.lastHand = state.game.handNumber;
     if (state.game.blindLevel > state.lastLevel) {
       state.lastLevel = state.game.blindLevel;
+      sound.blind();
       toast("盲注提升至 " + state.game.smallBlind + " / " + state.game.bigBlind, { gold: true });
     }
+    sound.deal();
     renderAll(true);
-    sound.card();
-    setTimeout(() => sound.card(), 80);
     advanceGame();
   }
 
@@ -1779,6 +1881,7 @@
     const previousCount = state.lastBoardCount;
     const winning = winningCardSet();
     const community = game.community || [];
+    if (community.length > previousCount) sound.flip();
     let html = "";
     for (let i = 0; i < 5; i++) {
       if (i < community.length) {
@@ -2023,6 +2126,7 @@
       setDockMode("idle");
       return;
     }
+    if (!state.online.actionPending) maybeTurnCue(game);
     if (state.mode === "online" && state.online.actionPending) {
       setDockMode("waiting");
       if (el.waitingAvatar) el.waitingAvatar.textContent = "你";
@@ -2318,7 +2422,7 @@
         state.game.advanceStreet();
         const afterCount = state.game.community.length;
         if (state.game.phase === "showdown") {
-          sound.street();
+          sound.showdown();
         } else if (afterCount > beforeCount) {
           const names = { flop: "翻 牌", turn: "转 牌", river: "河 牌" };
           showStreetBanner(names[state.game.phase] || "");
@@ -2371,7 +2475,7 @@
           console.error("AI fallback failed", fallbackError);
         }
       }
-      playActionSound(action || { type: "click" });
+      playActionSound({ ...(action || { type: "click" }), allIn: current.allIn });
       renderAll();
       advanceGame();
     }, delay);
@@ -2405,6 +2509,7 @@
       advanceGame();
     } catch (error) {
       console.error(error);
+      sound.error();
       toast(error.message || "无法执行该操作", { gold: false });
       renderAll();
     }
@@ -2433,6 +2538,10 @@
     }
     state.online.actionPending = true;
     renderDock();
+    const allInAction =
+      type === "raise" &&
+      Number.isFinite(Number(amount)) &&
+      Number(amount) >= Number(hero.streetBet || 0) + Number(hero.chips || 0);
     const roomCode = state.online.code;
     setTimeout(() => {
       if (state.online.actionPending && state.online.code === roomCode) {
@@ -2449,12 +2558,13 @@
       });
       playActionSound({
         type,
-        allIn: hero.allIn,
+        allIn: Boolean(hero.allIn || allInAction),
         fullRaise: true,
         amount,
       });
     } catch (error) {
       state.online.actionPending = false;
+      sound.error();
       toast(error.message || "操作未成功", { duration: 3200 });
       try {
         const result = await onlineApi("check", { room: state.online.code, token: state.online.token });
