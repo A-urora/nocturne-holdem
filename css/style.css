@@ -1138,6 +1138,7 @@ button:disabled {
 }
 
 .seat-action.action-fold { color: #bd8a86; }
+.seat-action.action-away { color: #9aa99f; border-color: rgba(154, 169, 159, 0.18); }
 .seat-action.action-raise,
 .seat-action.action-bet { color: var(--gold-bright); border-color: rgba(214, 179, 106, 0.26); }
 .seat-action.action-win { color: #9ee6c7; border-color: rgba(98, 201, 165, 0.3); }
@@ -4245,6 +4246,15 @@ input[type="range"]::-moz-range-thumb {
 .seat.is-offline {
   opacity: 0.6;
   filter: grayscale(0.5);
+}
+
+.seat.is-sitting-out {
+  opacity: 0.58;
+  filter: grayscale(0.45);
+}
+
+.seat.is-sitting-out .seat-role {
+  color: var(--gold-dim);
 }
 
 .seat.is-offline .avatar {

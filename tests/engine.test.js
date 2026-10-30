@@ -304,3 +304,34 @@ test("game snapshot restores a hand exactly, including hidden cards", () => {
   assert.equal(restored.getLegalActions(restored.currentPlayerId).canPlay, true);
   assert.equal(restored.config.players, undefined);
 });
+
+test("a sitting-out player skips blinds and is not dealt into the hand", () => {
+  const game = makeGame(3, 1000, { dealerIndex: 0 });
+  game.players[1].sittingOut = true;
+  assert.equal(game.startHand(), true);
+  const away = game.players[1];
+  assert.equal(away.dealtIn, false);
+  assert.equal(away.folded, true);
+  assert.equal(away.chips, 1000);
+  assert.equal(away.streetBet, 0);
+  assert.equal(away.hole.length, 0);
+  assert.equal(away.out, false);
+  assert.equal(away.eliminated, false);
+
+  game.players[1].sittingOut = false;
+  assert.equal(game.startHand(), true);
+  assert.equal(game.players[1].dealtIn, true);
+  assert.equal(game.players[1].hole.length, 2);
+});
+
+test("a two-player table waits instead of ending when one player sits out", () => {
+  const game = makeGame(2, 1000, { dealerIndex: 0 });
+  game.startHand();
+  game.players[1].sittingOut = true;
+  assert.equal(game.startHand(), false);
+  assert.equal(game.gameOver, false);
+  assert.equal(game.phase, "idle");
+  game.players[1].sittingOut = false;
+  assert.equal(game.startHand(), true);
+  assert.equal(game.players[1].dealtIn, true);
+});

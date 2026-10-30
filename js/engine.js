@@ -70,6 +70,7 @@
         allIn: false,
         out: false,
         eliminated: false,
+        sittingOut: Boolean(player.sittingOut),
         dealtIn: false,
         revealed: false,
         bestHand: null,
@@ -150,7 +151,9 @@
     }
 
     getPositionLabel(player) {
-      if (!player || !player.dealtIn) return "";
+      if (!player) return "";
+      if (player.sittingOut) return "暂离";
+      if (!player.dealtIn) return "";
       const inHand = this.players.filter((p) => p.dealtIn && !p.out);
       if (inHand.length === 2) {
         return player.seat === this.dealerIndex ? "按钮 / 小盲" : "大盲";
@@ -271,8 +274,18 @@
     /* ---------------------------------------------------------------- start hand */
 
     startHand() {
-      const active = this.players.filter((p) => p.chips > 0);
+      const funded = this.players.filter((p) => p.chips > 0);
+      const active = funded.filter((p) => !p.sittingOut);
       if (active.length < 2) {
+        if (funded.length >= 2) {
+          // There are still funded players, but too many are temporarily away.
+          // Keep the table alive and let the room wait for someone to sit back in.
+          this.phase = "idle";
+          this.currentPlayerId = null;
+          this.streetComplete = true;
+          this.version++;
+          return false;
+        }
         this.gameOver = true;
         this.champion = active[0] || null;
         this.phase = "gameover";
@@ -295,7 +308,7 @@
       } else {
         const nextDealer = this._nextSeat(
           this.dealerIndex,
-          (p) => p.chips > 0
+          (p) => p.chips > 0 && !p.sittingOut
         );
         if (nextDealer >= 0) this.dealerIndex = nextDealer;
       }
@@ -320,18 +333,19 @@
 
       for (const player of this.players) {
         const isOut = player.chips <= 0;
+        const isAway = Boolean(player.sittingOut);
         player.hole = [];
         player.streetBet = 0;
         player.totalBet = 0;
         player.hasActed = false;
-        player.folded = isOut;
+        player.folded = isOut || isAway;
         player.allIn = false;
         player.out = isOut;
         player.eliminated = isOut;
-        player.dealtIn = !isOut;
+        player.dealtIn = !isOut && !isAway;
         player.revealed = false;
         player.bestHand = null;
-        player.lastAction = null;
+        player.lastAction = isAway ? { type: "away", label: "暂离", amount: 0 } : null;
         player.winAmount = 0;
         player.isWinner = false;
       }

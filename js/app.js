@@ -1064,6 +1064,22 @@
       .join("");
   }
 
+  function markOnlineAway(sittingOut, timeoutMs) {
+    const code = state.online.code;
+    const token = state.online.token;
+    if (!code || !token) return Promise.resolve(false);
+    return onlineApi(
+      "away",
+      { room: code, token, sittingOut: Boolean(sittingOut) },
+      timeoutMs || 4000
+    )
+      .then((result) => {
+        if (result && result.view) state.online.view = result.view;
+        return true;
+      })
+      .catch(() => false);
+  }
+
   async function resumeRecentRoom(code) {
     const clean = String(code || "").replace(/\D/g, "").slice(0, 4);
     if (clean.length !== 4) return;
@@ -1678,6 +1694,7 @@
       remote: true,
       status: view.status,
       roomStatus: view.status,
+      waitingForPlayers: Boolean(view.waitingForPlayers),
       handNumber: g.handNumber,
       phase: g.phase,
       community: g.community || [],
@@ -1855,8 +1872,10 @@
           '<span class="lobby-player-avatar">' + escapeHtml(human.avatar || "♠") + "</span>" +
           '<span class="lobby-player-name">' + escapeHtml(human.name) + (you ? "（你）" : "") + "</span>" +
           (host ? '<span class="lobby-player-badge">房主</span>' : "") +
-          '<span class="lobby-player-state' + (human.connected ? "" : " is-off") + '"><i></i>' +
-          (human.connected ? "在线" : "重连中") +
+          '<span class="lobby-player-state' +
+          (human.connected && !human.sittingOut ? "" : " is-off") +
+          '"><i></i>' +
+          (human.sittingOut ? "暂离" : human.connected ? "在线" : "重连中") +
           "</span></li>"
         );
       })
@@ -2038,7 +2057,7 @@
     toast("已离开联机房间", { duration: 1800 });
   }
 
-  function temporarilyLeaveOnline() {
+  async function temporarilyLeaveOnline() {
     const code = state.online.code;
     if (!code) {
       leaveOnlineRoom();
@@ -2056,6 +2075,11 @@
     state.online.eventSource = null;
     state.online.connected = false;
     state.online.actionPending = false;
+    if (code && state.online.token) {
+      // Mark the seat as sitting out before the server sees the SSE close.
+      // From the next hand on the player is not dealt in and posts no blinds.
+      await markOnlineAway(true, 4000);
+    }
     state.mode = "solo";
     state.game = null;
     state.hero = null;
@@ -2093,8 +2117,8 @@
         ? '<p class="confirm-copy">只离开一会儿，选「暂离」：房间 ' +
           escapeHtml(code) +
           " 会保留 24 小时，本机可以随时回来。</p>" +
-          '<p class="confirm-copy">多人局里其他玩家可以继续，轮到你时会自动弃牌；如果选「退出房间」，座位会立即释放，无法回到原座位。</p>'
-        : '<p class="confirm-copy">「暂离」会保留房间和你的房主身份，稍后可以从最近房间回来；「退出房间」会离开并释放座位。</p>',
+          '<p class="confirm-copy">暂离期间不会发牌，也不会掉盲注；当前这一手如果轮到你，会自动弃牌。多人局里其他玩家可以继续。选「退出房间」会立即释放座位，无法回到原座位。</p>'
+        : '<p class="confirm-copy">「暂离」会保留房间和你的房主身份，但不会发牌；回来后再入座。「退出房间」会离开并释放座位。</p>',
       actions: [
         {
           label: "暂离，保留座位",
@@ -2692,6 +2716,7 @@
       const seat = el.seats.querySelector('[data-player-id="' + player.id + '"]');
       if (!seat) continue;
       const isTurn =
+        !player.sittingOut &&
         !game.streetComplete &&
         !game.handResult &&
         game.currentPlayerId === player.id &&
@@ -2708,9 +2733,12 @@
         isTurn ? "is-turn" : "",
         isWinner ? "is-winner" : "",
         player.folded && !isWinner ? "is-folded" : "",
+        player.sittingOut ? "is-sitting-out" : "",
         player.out ? "is-out" : "",
         thinking ? "is-thinking" : "",
-        player.isHuman && player.connected === false && !player.isYou ? "is-offline" : "",
+        player.isHuman && player.connected === false && !player.isYou && !player.sittingOut
+          ? "is-offline"
+          : "",
         game.dealerIndex === player.seat && player.dealtIn ? "has-dealer" : "",
       ]
         .filter(Boolean)
@@ -2722,8 +2750,9 @@
       const role = seat.querySelector(".seat-role");
       if (role) {
         const position = game.getPositionLabel(player);
-        role.textContent =
-          player.isHuman && player.connected === false && !player.isYou
+        role.textContent = player.sittingOut
+          ? "暂离 · 保留筹码"
+          : player.isHuman && player.connected === false && !player.isYou
             ? "掉线 · 等待重连"
             : position || player.tag || "";
       }
@@ -2805,6 +2834,9 @@
     if (ctx.isWinner) {
       label = "赢得 " + format(player.winAmount);
       type = "win";
+    } else if (player.sittingOut) {
+      label = "暂离";
+      type = "away";
     } else if (player.lastAction && player.lastAction.label && player.dealtIn) {
       label = player.lastAction.label;
       type = player.lastAction.type || "";
@@ -2932,7 +2964,10 @@
     let avatar = "♠";
     let text = "等待发牌…";
     let thinking = false;
-    if (game.streetComplete) {
+    if (game.waitingForPlayers) {
+      avatar = "…";
+      text = "等待暂离玩家回桌…";
+    } else if (game.streetComplete) {
       text = game.phase === "preflop" ? "正在发出翻牌…" : "正在发下一张公共牌…";
     } else if (game.currentPlayer) {
       const current = game.currentPlayer;
@@ -3144,7 +3179,11 @@
       el.resultRestartBtn.hidden = false;
       el.resultRestartBtn.textContent = "离开房间";
       el.nextCountdown.hidden = gameOver || humanEliminated;
-      el.nextCountdown.textContent = gameOver ? "" : "下一手自动开始";
+      el.nextCountdown.textContent = gameOver
+        ? ""
+        : game.waitingForPlayers
+          ? "等待暂离玩家回桌"
+          : "下一手自动开始";
     } else {
       el.nextHandBtn.hidden = !canContinue;
       el.resultRestartBtn.hidden = canContinue;

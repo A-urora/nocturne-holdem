@@ -34,6 +34,7 @@ const QUICK_PHRASE_MAP = new Map(QUICK_PHRASES.map((phrase) => [phrase.id, phras
 const CHAT_COOLDOWN_MS = 1500;
 const TURN_MS = 45000;
 const TURN_DISCONNECTED_MS = 15000;
+const TURN_SITTING_OUT_MS = 1500;
 const NEXT_HAND_MS = 9000;
 const STREET_MS = 800;
 const BOT_MIN_MS = 700;
@@ -146,7 +147,7 @@ function activeHumans(room) {
 }
 
 function canStart(room) {
-  const humans = activeHumans(room).length;
+  const humans = activeHumans(room).filter((human) => !human.sittingOut).length;
   if (humans < 1) return false;
   if (room.botFill) return humans <= MAX_HUMANS;
   return humans >= 2;
@@ -168,6 +169,30 @@ function allHumansEliminated(room) {
     const player = room.game && room.game.players.find((candidate) => candidate.id === human.id);
     return !player || player.chips <= 0;
   });
+}
+
+function setHumanSittingOut(room, human, sittingOut) {
+  if (!room || !human) return false;
+  const next = Boolean(sittingOut);
+  if (Boolean(human.sittingOut) === next) return false;
+  human.sittingOut = next;
+  const game = room.game;
+  const player = game && game.players.find((candidate) => candidate.id === human.id);
+  if (player) player.sittingOut = next;
+  if (next && game && room.status === "playing" && !game.handResult && player) {
+    if (player.dealtIn && !player.folded && game.currentPlayerId === player.id) {
+      try {
+        game.act(player.id, "fold");
+        game._log("system", human.name + " 暂离，本手自动弃牌", { playerId: human.id });
+      } catch (error) {
+        /* The hand may have just ended; the next hand will still skip them. */
+      }
+    } else if (player.dealtIn && !player.folded) {
+      game._log("system", human.name + " 暂离，本手不再行动", { playerId: human.id });
+    }
+  }
+  roomChanged(room);
+  return true;
 }
 
 function touch(room) {
@@ -205,6 +230,7 @@ function snapshotRoom(room) {
       seq: room.seq,
       turnPlayerId: room.turnPlayerId,
       paused: room.paused,
+      waitingForPlayers: Boolean(room.waitingForPlayers),
       chat: room.chat.slice(-30),
       chatSeq: room.chatSeq,
       startedAt: room.startedAt || null,
@@ -265,6 +291,7 @@ function hydrateRoom(payload) {
     turnDeadline: 0,
     turnPlayerId: data.turnPlayerId || null,
     paused: finalStatus === "playing",
+    waitingForPlayers: Boolean(data.waitingForPlayers),
     clients: new Set(),
     chat: Array.isArray(data.chat) ? data.chat.slice(-30) : [],
     chatSeq: Number(data.chatSeq) || 0,
@@ -289,6 +316,10 @@ function hydrateRoom(payload) {
   if (game) {
     for (const player of game.players) {
       if (!player.isHuman) room.ais.set(player.id, new PokerAI(room.difficulty));
+    }
+    for (const human of room.humans) {
+      const player = game.players.find((candidate) => candidate.id === human.id);
+      if (player) player.sittingOut = Boolean(human.sittingOut);
     }
   }
   return room;
@@ -389,6 +420,7 @@ function publicHuman(human) {
     avatar: human.avatar,
     isHost: Boolean(human.isHost),
     connected: Boolean(human.connected),
+    sittingOut: Boolean(human.sittingOut),
     joinedAt: human.joinedAt,
   };
 }
@@ -440,6 +472,7 @@ function buildGameView(room, viewerId) {
       isHuman: Boolean(player.isHuman),
       isYou: self,
       connected: online,
+      sittingOut: Boolean(player.sittingOut),
       seat,
       position: game.getPositionLabel(player),
       chips: player.chips,
@@ -509,9 +542,11 @@ function buildGameView(room, viewerId) {
           seat: 0,
           chips: viewer.chips,
           isHost: room.hostId === viewer.id,
+          sittingOut: Boolean(viewer.sittingOut),
         }
       : null,
     statusLabel: room.status,
+    waitingForPlayers: Boolean(room.waitingForPlayers),
     playerId: viewerId,
     turnDeadline: room.turnDeadline || 0,
     serverTime: Date.now(),
@@ -707,7 +742,13 @@ function prepareTurn(room) {
   const now = Date.now();
   if (room.turnPlayerId !== current.id || !room.turnDeadline || room.turnDeadline <= now) {
     room.turnPlayerId = current.id;
-    room.turnDeadline = now + (human && human.connected ? TURN_MS : TURN_DISCONNECTED_MS);
+    room.turnDeadline =
+      now +
+      (human && human.sittingOut
+        ? TURN_SITTING_OUT_MS
+        : human && human.connected
+          ? TURN_MS
+          : TURN_DISCONNECTED_MS);
   }
 }
 
@@ -756,6 +797,19 @@ function armRoom(room) {
     return;
   }
 
+  if (room.waitingForPlayers) {
+    const started = game.startHand();
+    if (!started) {
+      room.paused = true;
+      room.turnDeadline = 0;
+      room.turnPlayerId = null;
+      return;
+    }
+    room.waitingForPlayers = false;
+    roomChanged(room);
+    return;
+  }
+
   if (game.handResult) {
     room.turnDeadline = 0;
     room.turnPlayerId = null;
@@ -767,9 +821,18 @@ function armRoom(room) {
       }
       const started = game.startHand();
       if (!started) {
-        finishRoom(room);
+        if (game.gameOver) {
+          finishRoom(room);
+        } else {
+          room.waitingForPlayers = true;
+          room.paused = true;
+          room.turnDeadline = 0;
+          room.turnPlayerId = null;
+          broadcast(room);
+        }
         return;
       }
+      room.waitingForPlayers = false;
       roomChanged(room);
     }, NEXT_HAND_MS);
     return;
@@ -849,13 +912,18 @@ function timeoutTurn(room, playerId) {
   }
   const player = game.getPlayer(playerId);
   if (!player || !player.isHuman) return;
+  const human = findHumanById(room, player.id);
+  const away = Boolean(human && human.sittingOut);
   const legal = safeLegal(game, playerId);
   if (!legal || !legal.canPlay) {
     roomChanged(room);
     return;
   }
   try {
-    if (legal.canCheck) {
+    if (away) {
+      game._log("action", player.name + " 暂离，自动弃牌", { playerId: player.id, action: "fold" });
+      game.act(player.id, "fold");
+    } else if (legal.canCheck) {
       game._log("action", player.name + " 超时，自动过牌", { playerId: player.id, action: "check" });
       game.act(player.id, "check");
     } else {
@@ -924,6 +992,7 @@ function createRoom(options) {
     turnDeadline: 0,
     turnPlayerId: null,
     paused: false,
+    waitingForPlayers: false,
     clients: new Set(),
     chat: [],
     chatSeq: 0,
@@ -973,6 +1042,7 @@ function makeGame(room) {
     color: human.color,
     tag: "玩家",
     isHuman: true,
+    sittingOut: Boolean(human.sittingOut),
     chips: room.startingChips,
   }));
   const botCount = room.botFill ? Math.max(0, 6 - humans.length) : 0;
@@ -1140,7 +1210,10 @@ function handleEvents(req, res, url) {
       } else {
         const current = room.game && room.game.currentPlayer;
         if (current && current.id === human.id) {
-          room.turnDeadline = Math.min(room.turnDeadline || Infinity, Date.now() + TURN_DISCONNECTED_MS);
+          room.turnDeadline = Math.min(
+            room.turnDeadline || Infinity,
+            Date.now() + (human.sittingOut ? TURN_SITTING_OUT_MS : TURN_DISCONNECTED_MS)
+          );
         }
       }
     }
@@ -1263,6 +1336,7 @@ async function handleApi(req, res, url) {
         sendJson(res, 401, { error: "房间不存在或登录已失效。" });
         return;
       }
+      if (human.sittingOut) setHumanSittingOut(room, human, false);
       sendJson(res, 200, {
         ok: true,
         status: room.status,
@@ -1293,6 +1367,18 @@ async function handleApi(req, res, url) {
       }
       startRoom(room);
       sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (pathname === "/api/away") {
+      const room = findRoom(body.room);
+      const human = room ? findHuman(room, body.token) : null;
+      if (!room || !human) {
+        sendJson(res, 401, { error: "房间不存在或登录已失效。" });
+        return;
+      }
+      setHumanSittingOut(room, human, body.sittingOut !== false);
+      sendJson(res, 200, { ok: true, view: buildView(room, human.id) });
       return;
     }
 

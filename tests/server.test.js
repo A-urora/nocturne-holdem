@@ -311,3 +311,110 @@ test("the last human leaving a playing room deletes it", async () => {
     assert.equal(state.status, 401);
   });
 });
+
+test("away keeps the seat and sitting back in clears the flag", async () => {
+  await withServer(async (base) => {
+    const created = await post(base, "/api/create", {
+      name: "暂离玩家",
+      botFill: true,
+      difficulty: "standard",
+      startingChips: 5000,
+    });
+    await post(base, "/api/start", {
+      room: created.data.room,
+      token: created.data.token,
+    });
+    const away = await post(base, "/api/away", {
+      room: created.data.room,
+      token: created.data.token,
+      sittingOut: true,
+    });
+    assert.equal(away.response.status, 200);
+    const awayPlayer = away.data.view.game.players.find(
+      (player) => player.id === created.data.playerId
+    );
+    assert.equal(awayPlayer.sittingOut, true);
+    assert.equal(away.data.view.you.sittingOut, true);
+
+    const back = await post(base, "/api/check", {
+      room: created.data.room,
+      token: created.data.token,
+    });
+    assert.equal(back.response.status, 200);
+    const backPlayer = back.data.view.game.players.find(
+      (player) => player.id === created.data.playerId
+    );
+    assert.equal(backPlayer.sittingOut, false);
+    assert.equal(back.data.view.you.sittingOut, false);
+  });
+});
+
+test("a lobby player who is sitting out is not dealt in and does not block bots", async () => {
+  await withServer(async (base) => {
+    const created = await post(base, "/api/create", {
+      name: "在座",
+      botFill: true,
+      difficulty: "standard",
+      startingChips: 5000,
+    });
+    const joined = await post(base, "/api/join", {
+      room: created.data.room,
+      name: "暂离",
+    });
+    const away = await post(base, "/api/away", {
+      room: created.data.room,
+      token: joined.data.token,
+      sittingOut: true,
+    });
+    assert.equal(away.response.status, 200);
+    assert.equal(
+      away.data.view.lobby.humans.find((human) => human.id === joined.data.playerId).sittingOut,
+      true
+    );
+
+    const started = await post(base, "/api/start", {
+      room: created.data.room,
+      token: created.data.token,
+    });
+    assert.equal(started.response.status, 200);
+
+    const awayState = await fetch(
+      base + "/api/state?room=" + created.data.room + "&token=" + joined.data.token
+    ).then((response) => response.json());
+    const awayPlayer = awayState.view.game.players.find(
+      (player) => player.id === joined.data.playerId
+    );
+    assert.equal(awayPlayer.sittingOut, true);
+    assert.equal(awayPlayer.dealtIn, false);
+    assert.equal(awayPlayer.hole.length, 0);
+  });
+});
+
+test("a sitting-out player does not count toward the two-human start", async () => {
+  await withServer(async (base) => {
+    const created = await post(base, "/api/create", {
+      name: "A",
+      botFill: false,
+      difficulty: "standard",
+      startingChips: 5000,
+    });
+    const joined = await post(base, "/api/join", {
+      room: created.data.room,
+      name: "B",
+    });
+    await post(base, "/api/away", {
+      room: created.data.room,
+      token: joined.data.token,
+      sittingOut: true,
+    });
+    const lobby = await fetch(
+      base + "/api/state?room=" + created.data.room + "&token=" + created.data.token
+    ).then((response) => response.json());
+    assert.equal(lobby.view.lobby.canStart, false);
+    const start = await post(base, "/api/start", {
+      room: created.data.room,
+      token: created.data.token,
+    });
+    assert.equal(start.response.status, 400);
+  });
+});
