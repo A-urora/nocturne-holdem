@@ -7,7 +7,7 @@
 - **单人模式**：纯静态，双击 `index.html` 就能和电脑玩家对战；
 - **联机模式**：4 位房间号 / 邀请链接，真人同桌，空位由 AI 补足，支持断线重连、行动倒计时、隐藏底牌；
 - **零框架、无构建步骤**：牌桌 UI、规则引擎、AI、联机服务全部使用原生 JavaScript / Node.js 实现；只有可选的持久化战绩使用 `pg`；
-- **排行榜与历史战绩**：按昵称聚合联机战绩，支持局数、手数、胜场、总积分和最近牌局记录；线上使用 Render Postgres 持久化。
+- **排行榜与历史战绩**：按昵称聚合联机战绩，支持局数、手数、胜场、总积分和最近牌局记录；线上使用 Neon 免费 Postgres 持久化。
 
 ![桌面牌桌](docs/screenshot-table.png)
 
@@ -110,30 +110,26 @@ GET  /api/health   健康检查
 - 历史战绩按昵称查询，最近 40 场；
 - 配置 `DATABASE_URL` 时，战绩快照写入 Postgres 的 `nocturne_stats` 表，服务重启/休眠后仍然保留；
 - 未配置 `DATABASE_URL` 时，数据默认写入 `data/stats.json`，可用环境变量 `DATA_DIR` 改路径；
-- `render.yaml` 会自动创建一个 Render 免费 Postgres 并注入 `DATABASE_URL`；
-- **Render 免费 Postgres 30 天后到期**，到期前升级或迁移数据即可；Web Service 的本地文件系统仍是临时的，所以线上请使用 Postgres 或持久化磁盘。
+- 线上把 `DATABASE_URL` 指向 **Neon 免费 Postgres**；Neon 免费库不会像 Render 免费库那样 30 天强制删除，数据可以长期保留；
+- Render 免费 Web Service 的本地文件系统仍是临时的，所以排行榜必须放在 Neon，或者挂载持久化磁盘。
 
 ---
 
 ## 部署：不需要自己的服务器
 
-### 方案 A：Render（推荐，免费）
+### 方案 A：Render 免费 Web + Neon 免费 Postgres（推荐）
 
-仓库里的 `render.yaml` 会同时创建：
-- 一个免费 Node Web Service；
-- 一个免费 Render Postgres，并自动注入 `DATABASE_URL`，让排行榜跨重启保留。
+这个组合不需要为数据库付费，也不会遇到 Render 免费 Postgres 的 30 天删除：
 
-> 免费 Postgres 30 天后到期。Web Service 的本地文件系统是临时的；长期使用请升级数据库或使用持久化磁盘。
+1. 在 [Neon](https://neon.tech/) 创建一个免费项目，区域选 **Singapore / AWS ap-southeast-1**；
+2. 复制数据库连接串（包含 `sslmode=require`）；
+3. 在 [Render](https://render.com/) 用仓库里的 `render.yaml` 创建 Blueprint；
+4. `render.yaml` 会提示填写 `DATABASE_URL`，粘贴 Neon 连接串即可；
+5. 部署完成后得到 `https://xxx.onrender.com`，把链接发给朋友。
 
-仓库里已经包含 `render.yaml`。
+`render.yaml` 不创建 Render Postgres，只创建免费的 Node Web Service。Neon 免费层有存储/计算额度，数据跨 Render 重启和休眠保留。
 
-1. 把项目推送到 GitHub；
-2. 打开 [Render](https://render.com/)，选择 **New → Blueprint**；
-3. 连接仓库，Render 会读取 `render.yaml`；
-4. 选择免费套餐，部署完成后得到 `https://xxx.onrender.com`；
-5. 把链接发给朋友，手机直接打开即可。
-
-> 免费实例长时间无人访问会休眠，第一次打开可能需要等几十秒。房间是内存数据，服务重启后会清空。
+> Render 免费实例长时间无人访问会休眠，第一次打开可能需要等几十秒；每月 750 免费实例小时。房间是内存数据，服务重启后会清空，排行榜在 Neon 里不受影响。
 
 ### 方案 B：Docker / 任意 Node 主机
 
@@ -191,7 +187,7 @@ js/app.js                  界面渲染、单机流程、联机 UI、SSE 客户�
 server.js                  零框架 Node 联机房间服务（静态托管 + API + SSE）
 stats-store.js             排行榜/历史战绩存储（JSON 或 Postgres 快照）
 tests/                     牌型、规则、AI、联机 API 与排行榜测试
-render.yaml                Render 一键部署配置
+render.yaml                Render 免费 Web + Neon 部署配置
 Dockerfile                 容器部署
 ```
 
@@ -208,9 +204,9 @@ Dockerfile                 容器部署
 
 ## 已知边界
 
-- 联机数据保存在内存中，服务重启或长时间无访问会丢失房间，没有排行榜和历史战绩。
+- 联机房间保存在进程内存中，服务重启或长时间无访问会丢失进行中的房间；排行榜和历史战绩保存在 Neon/本地文件，不受影响。
 - 当前是单进程房间服务，不支持多实例/横向扩容；要做大规模公网服务，需要 Redis/Postgres 等共享状态和持久化。
-- Render 免费 Web Service 的本地文件系统是临时的；本项目线上使用 Render Postgres 保存战绩。免费 Postgres 30 天后到期，长期使用需要升级数据库或挂载持久化磁盘。
+- 线上使用 Render 免费 Web Service + Neon 免费 Postgres；Render 免费实例会休眠，Neon 免费层有存储/计算额度限制。
 - 排行榜按昵称合并，没有账号/密码体系，因此改名或重名会合并统计；适合朋友之间娱乐，不适合作为严肃竞技积分。
 - 没有接入真钱支付，也不适合真钱博彩。
 - 静态托管只能单人；联机必须运行 `server.js` 或使用 Render/Docker 等 Node 环境。
